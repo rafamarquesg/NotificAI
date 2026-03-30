@@ -6,4 +6,7 @@ gspread
 google-auth
 PyMuPDF
 openpyxl
-pytest
+pytest# ML / NLP
+numpy
+scikit-learn
+joblib

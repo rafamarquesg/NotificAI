@@ -1,12 +1,27 @@
+# PDF extraction
 pdfplumber
 pdf2image
 pytesseract
+PyMuPDF
+
+# Data / output
 pandas
+openpyxl
+
+# Google integrations (Colab)
 gspread
 google-auth
-PyMuPDF
-openpyxl
-pytest# ML / NLP
+
+# Testing
+pytest
+
+# ML / NLP — lexical + scikit-learn
 numpy
 scikit-learn
 joblib
+
+# ML / NLP — BERT (BioBERTpt, BERTimbau) — instalar separadamente se GPU disponível
+# pip install torch transformers
+# ou com suporte CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu118
+torch
+transformers

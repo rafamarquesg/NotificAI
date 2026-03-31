@@ -1,14 +1,30 @@
 """
 Classificador de tipos de notificação de violência.
 
-Arquitetura dual:
-- **Modo regras** (padrão): operacional imediatamente, sem dados rotulados.
-  Usa os padrões do FeatureExtractor para inferir o tipo mais provável.
-- **Modo ML**: ativado via `fit()` ou `load()` quando dados rotulados existem.
-  Usa scikit-learn com as características do FeatureExtractor como entrada.
+Arquitetura em três modos progressivos:
 
-A interface é idêntica nos dois modos, permitindo substituição transparente
-quando o modelo for treinado com dados reais.
+1. **Modo regras** (padrão, sem dependências extras):
+   Usa os padrões do FeatureExtractor para inferir o tipo mais provável.
+   Operacional imediatamente, sem dados rotulados.
+
+2. **Modo ML lexical** (requer scikit-learn):
+   Treinado com as ~35 características lexicais do FeatureExtractor.
+   Ativado via `fit()` ou `load()`.
+
+3. **Modo ML + BERT** (requer scikit-learn + torch + transformers):
+   Combina as ~35 características lexicais com os 768 dims de embedding
+   BioBERTpt/BERTimbau para representação semântica densa.
+   Ativado passando um `BertEmbedder` ao construir o `FeatureExtractor`.
+
+   Exemplo:
+       from embedder import BertEmbedder
+       from features import FeatureExtractor
+       embedder = BertEmbedder("pucpr/biobertpt-clin")
+       extractor = FeatureExtractor(embedder=embedder)
+       clf = NotificationClassifier(extractor=extractor)
+       clf.fit(texts, labels)
+
+A interface `predict` / `predict_proba` é idêntica nos três modos.
 """
 
 import logging
@@ -152,13 +168,26 @@ class NotificationClassifier:
     e cai de volta para regras caso contrário — sem alterar o código chamador.
     """
 
-    def __init__(self, estimator: Optional[object] = None) -> None:
+    def __init__(
+        self,
+        estimator: Optional[object] = None,
+        extractor: Optional["FeatureExtractor"] = None,
+    ) -> None:
         """
         Args:
             estimator: estimador scikit-learn personalizado (opcional).
                        Padrão: LogisticRegression com StandardScaler.
+            extractor: FeatureExtractor pré-configurado (opcional).
+                       Passe um extractor com BertEmbedder para modo ML+BERT:
+
+                           from embedder import BertEmbedder
+                           from features import FeatureExtractor
+                           emb = BertEmbedder("pucpr/biobertpt-clin")
+                           clf = NotificationClassifier(
+                               extractor=FeatureExtractor(embedder=emb)
+                           )
         """
-        self._extractor = FeatureExtractor()
+        self._extractor = extractor if extractor is not None else FeatureExtractor()
         self._model: Optional[object] = None
         self._classes: Optional[List[str]] = None
         self._is_trained = False
@@ -274,9 +303,19 @@ class NotificationClassifier:
             raise RuntimeError("Nenhum modelo treinado. Chame fit() primeiro.")
         if not HAS_SKLEARN:
             raise ImportError("joblib não disponível.")
-        payload = {"model": self._model, "classes": self._classes}
+        payload = {
+            "model": self._model,
+            "classes": self._classes,
+            "uses_bert": self._extractor.uses_bert,
+            "bert_model_id": (
+                self._extractor._embedder.model_id
+                if self._extractor.uses_bert else None
+            ),
+        }
         joblib.dump(payload, path)
-        logger.info("Modelo salvo em: %s", path)
+        logger.info(
+            "Modelo salvo em: %s (bert=%s)", path, payload["uses_bert"]
+        )
 
     @classmethod
     def load(cls, path: str) -> "NotificationClassifier":
@@ -292,11 +331,29 @@ class NotificationClassifier:
         if not HAS_SKLEARN:
             raise ImportError("joblib não disponível.")
         payload = joblib.load(path)
-        instance = cls()
+
+        # Recriar extractor com embedder BERT se o modelo foi treinado com ele
+        extractor = None
+        bert_model_id = payload.get("bert_model_id")
+        if bert_model_id:
+            try:
+                from embedder import BertEmbedder
+                from features import FeatureExtractor
+                logger.info("Recarregando embedder BERT '%s'…", bert_model_id)
+                extractor = FeatureExtractor(embedder=BertEmbedder(bert_model_id))
+            except Exception as exc:
+                logger.warning(
+                    "Não foi possível recarregar embedder BERT: %s. "
+                    "Usando extractor lexical.", exc
+                )
+
+        instance = cls(extractor=extractor)
         instance._model = payload["model"]
         instance._classes = payload["classes"]
         instance._is_trained = True
-        logger.info("Modelo carregado de: %s", path)
+        logger.info(
+            "Modelo carregado de: %s (bert=%s)", path, bool(bert_model_id)
+        )
         return instance
 
     # ------------------------------------------------------------------

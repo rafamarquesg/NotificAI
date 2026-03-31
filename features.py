@@ -5,21 +5,34 @@ O FeatureExtractor converte um texto em:
   - Pontuações e contagens por categoria lexical  (detector.py)
   - Flags de padrões clínicos específicos         (regex curado)
   - Estatísticas básicas do texto                 (comprimento, sentenças…)
+  - Embeddings BERT (opcional, via embedder.py)   — BioBERTpt / BERTimbau
 
-Essas características formam o vetor numérico que alimentará o classificador.
+Quando `embedder` é fornecido, os vetores lexicais e os embeddings BERT são
+concatenados em um único vetor enriquecido. Isso permite que o classificador
+downstream use tanto o conhecimento lexical curado quanto a representação
+semântica densa do modelo de linguagem clínico pré-treinado.
+
+Hierarquia de riqueza de representação:
+  Lexical only (~35 dims)  <  Lexical + BERT (~803 dims)  <  BERT fine-tuned
+
 Quando dados rotulados estiverem disponíveis, o mesmo vetor será usado para
 treinar e avaliar os modelos de ML.
 """
 
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 try:
     from .detector import ViolenceDetector
+    from .embedder import BertEmbedder
 except ImportError:
     from detector import ViolenceDetector
+    try:
+        from embedder import BertEmbedder
+    except ImportError:
+        BertEmbedder = None  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +134,10 @@ def _text_stats(text: str) -> Dict[str, float]:
     }
 
 
-def _build_feature_names(lexicon_categories: List[str]) -> List[str]:
+def _build_feature_names(
+    lexicon_categories: List[str],
+    bert_dim: int = 0,
+) -> List[str]:
     names: List[str] = []
     for cat in lexicon_categories:
         names.append(f"score_{cat}")
@@ -138,6 +154,9 @@ def _build_feature_names(lexicon_categories: List[str]) -> List[str]:
         "text_avg_word_len",
         "text_avg_sentence_len",
     ]
+    # Dimensões BERT concatenadas ao final (quando embedder presente)
+    for i in range(bert_dim):
+        names.append(f"bert_{i}")
     return names
 
 
@@ -145,28 +164,37 @@ class FeatureExtractor:
     """
     Converte texto em vetor numérico para uso em classificadores de ML.
 
-    Características geradas (total ~35):
-    - Pontuação acumulada por categoria lexical  (8 floats)
-    - Contagem de termos por categoria           (8 ints)
-    - Contagem de achados negados                (1 int)
-    - Pontuação total (sem negados)              (1 float)
-    - Flags de padrões clínicos                  (12 bools → 0/1)
-    - Estatísticas do texto                      (5 floats)
-
-    Uso:
+    Modo lexical (~35 dims):
         extractor = FeatureExtractor()
 
-        # Dicionário interpretável (para debugging / logging)
-        features = extractor.extract("Paciente com violência doméstica.")
+    Modo léxico + BERT (~803 dims com BioBERTpt/BERTimbau):
+        from embedder import BertEmbedder
+        embedder = BertEmbedder("pucpr/biobertpt-clin")
+        extractor = FeatureExtractor(embedder=embedder)
 
-        # Vetor numpy para ML
+    As características BERT (mean-pooled, L2-normalizadas) são concatenadas
+    ao vetor lexical, permitindo que o classificador downstream use tanto
+    o conhecimento curado quanto a semântica densa do LM clínico.
+
+    Uso:
+        features = extractor.extract("Paciente com violência doméstica.")
         X = extractor.vectorize("Paciente com violência doméstica.")
+        X_batch = extractor.vectorize_batch(["texto1", "texto2"])
     """
 
-    def __init__(self) -> None:
+    def __init__(self, embedder: Optional["BertEmbedder"] = None) -> None:
+        """
+        Args:
+            embedder: instância de BertEmbedder (opcional).
+                      Quando fornecido, os embeddings BERT são concatenados
+                      ao vetor lexical. Quando None, modo lexical puro.
+        """
         self._detector = ViolenceDetector()
+        self._embedder = embedder
+        bert_dim = embedder.embedding_dim if embedder is not None else 0
         self._feature_names: List[str] = _build_feature_names(
-            list(self._detector.lexicon.keys())
+            list(self._detector.lexicon.keys()),
+            bert_dim=bert_dim,
         )
 
     # ------------------------------------------------------------------
@@ -177,6 +205,11 @@ class FeatureExtractor:
     def feature_names(self) -> List[str]:
         """Lista com o nome de cada dimensão do vetor de características."""
         return list(self._feature_names)
+
+    @property
+    def uses_bert(self) -> bool:
+        """True se um embedder BERT está configurado."""
+        return self._embedder is not None
 
     def extract(self, text: str) -> Dict[str, Any]:
         """
@@ -190,6 +223,7 @@ class FeatureExtractor:
               "total_score":     float,
               "pattern_flags":   {padrão: bool, ...},
               "text_stats":      {métrica: float, ...},
+              "bert_embedding":  np.ndarray ou None,
             }
         """
         detections = self._detector.analyze(text)
@@ -211,6 +245,10 @@ class FeatureExtractor:
 
         total_score = sum(category_scores.values())
 
+        bert_embedding: Optional[np.ndarray] = None
+        if self._embedder is not None:
+            bert_embedding = self._embedder.embed(text)
+
         return {
             "category_scores": category_scores,
             "category_counts": category_counts,
@@ -218,6 +256,7 @@ class FeatureExtractor:
             "total_score": total_score,
             "pattern_flags": _detect_patterns(text),
             "text_stats": _text_stats(text),
+            "bert_embedding": bert_embedding,
         }
 
     def vectorize(self, text: str) -> np.ndarray:
@@ -225,14 +264,34 @@ class FeatureExtractor:
         return self._to_vector(self.extract(text))
 
     def vectorize_batch(self, texts: List[str]) -> np.ndarray:
-        """Vetoriza uma lista de textos; retorna matriz (n_samples, n_features)."""
+        """
+        Vetoriza uma lista de textos; retorna matriz (n_samples, n_features).
+
+        Quando um embedder BERT está configurado, usa embed_batch() para
+        processar todos os textos de uma vez (mais eficiente que chamadas
+        individuais).
+        """
+        if self._embedder is not None:
+            # Extrair partes lexicais individualmente
+            lexical_vecs = np.vstack([
+                self._to_vector(self.extract(t), skip_bert=True)
+                for t in texts
+            ])
+            # Embeddings BERT em lote (mais eficiente)
+            bert_vecs = self._embedder.embed_batch(texts)
+            return np.hstack([lexical_vecs, bert_vecs])
+
         return np.vstack([self.vectorize(t) for t in texts])
 
     # ------------------------------------------------------------------
     # Internos
     # ------------------------------------------------------------------
 
-    def _to_vector(self, features: Dict[str, Any]) -> np.ndarray:
+    def _to_vector(
+        self,
+        features: Dict[str, Any],
+        skip_bert: bool = False,
+    ) -> np.ndarray:
         values: List[float] = []
         for cat in self._detector.lexicon:
             values.append(features["category_scores"].get(cat, 0.0))
@@ -250,4 +309,9 @@ class FeatureExtractor:
             stats["avg_word_len"],
             stats["avg_sentence_len"],
         ]
-        return np.array(values, dtype=np.float32)
+        lexical_vec = np.array(values, dtype=np.float32)
+
+        if skip_bert or features.get("bert_embedding") is None:
+            return lexical_vec
+
+        return np.concatenate([lexical_vec, features["bert_embedding"]])

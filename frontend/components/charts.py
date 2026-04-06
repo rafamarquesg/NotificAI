@@ -12,24 +12,53 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 _TYPE_COLORS = {
-    "Violência Física":              "#e74c3c",
-    "Violência Sexual":              "#8e44ad",
-    "Violência Psicológica/Moral":   "#e67e22",
-    "Violência Autoprovocada":       "#c0392b",
-    "Negligência/Abandono":          "#2980b9",
-    "Trabalho Infantil":             "#f39c12",
-    "Tráfico de Pessoas":            "#16a085",
-    "Outros/Não Classificado":       "#7f8c8d",
+    "Violência Física":              "#EF4444",
+    "Violência Sexual":              "#A855F7",
+    "Violência Psicológica/Moral":   "#F97316",
+    "Violência Autoprovocada":       "#EC4899",
+    "Negligência/Abandono":          "#3B82F6",
+    "Trabalho Infantil":             "#EAB308",
+    "Tráfico de Pessoas":            "#14B8A6",
+    "Outros/Não Classificado":       "#6B7280",
 }
 
 _SEVERITY_COLORS = {
-    "CRÍTICO":        "#c0392b",
-    "ALTO":           "#e74c3c",
-    "MODERADO":       "#e67e22",
-    "BAIXO":          "#f1c40f",
-    "MÍNIMO":         "#2ecc71",
-    "SEM INDICAÇÃO":  "#95a5a6",
+    "CRÍTICO":        "#EF4444",
+    "ALTO":           "#F97316",
+    "MODERADO":       "#EAB308",
+    "BAIXO":          "#3B82F6",
+    "MÍNIMO":         "#10B981",
+    "SEM INDICAÇÃO":  "#374151",
 }
+
+# Template Plotly para o tema escuro do NotificAI
+_DARK_TEMPLATE = dict(
+    layout=dict(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, sans-serif", color="#94A3B8", size=12),
+        title=dict(font=dict(color="#E2E8F0", size=14, family="Inter")),
+        legend=dict(
+            bgcolor="rgba(20,28,46,0.8)",
+            bordercolor="rgba(255,255,255,0.07)",
+            borderwidth=1,
+            font=dict(color="#94A3B8", size=11),
+        ),
+        xaxis=dict(
+            gridcolor="rgba(255,255,255,0.05)",
+            linecolor="rgba(255,255,255,0.08)",
+            tickfont=dict(color="#4B5563"),
+            title_font=dict(color="#64748B"),
+        ),
+        yaxis=dict(
+            gridcolor="rgba(255,255,255,0.05)",
+            linecolor="rgba(255,255,255,0.08)",
+            tickfont=dict(color="#4B5563"),
+            title_font=dict(color="#64748B"),
+        ),
+        margin=dict(l=16, r=16, t=40, b=16),
+    )
+)
 
 
 # ---------------------------------------------------------------------------
@@ -53,10 +82,14 @@ def donut_by_type(rows: List[Dict[str, Any]]) -> go.Figure:
         hovertemplate="%{label}<br>%{value} casos (%{percent})<extra></extra>",
     ))
     fig.update_layout(
-        title_text="Distribuição por Tipo de Notificação",
-        showlegend=False,
-        margin=dict(t=50, b=20, l=20, r=20),
+        **_DARK_TEMPLATE["layout"],
+        title_text="Distribuição por Tipo",
+        showlegend=True,
+        legend=dict(orientation="v", x=1.02, y=0.5,
+                    bgcolor="rgba(0,0,0,0)", font=dict(size=10, color="#64748B")),
+        margin=dict(t=44, b=12, l=12, r=120),
     )
+    fig.update_traces(textfont=dict(color="#94A3B8", size=11))
     return fig
 
 
@@ -85,14 +118,17 @@ def bar_by_severity(rows: List[Dict[str, Any]]) -> go.Figure:
         hovertemplate="%{y}: %{x} casos<extra></extra>",
     ))
     fig.update_layout(
+        **_DARK_TEMPLATE["layout"],
         title_text="Casos por Severidade",
         xaxis_title="Quantidade",
         yaxis_title="",
-        margin=dict(t=50, b=40, l=140, r=60),
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=44, b=20, l=140, r=60),
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#ecf0f1")
+    fig.update_traces(marker=dict(
+        color=colors,
+        line=dict(color="rgba(0,0,0,0)", width=0),
+    ), textfont=dict(color="#64748B"))
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)")
     return fig
 
 
@@ -108,35 +144,33 @@ def line_over_time(rows: List[Dict[str, Any]]) -> go.Figure:
     df = pd.DataFrame(rows)
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df["period"],
-        y=df["total"],
-        mode="lines+markers",
-        name="Casos",
-        line=dict(color="#2980b9", width=2),
-        marker=dict(size=6),
+        x=df["period"], y=df["total"],
+        mode="lines+markers", name="Casos",
+        line=dict(color="#3B82F6", width=2.5),
+        marker=dict(size=7, color="#3B82F6",
+                    line=dict(color="#0B0F19", width=2)),
+        fill="tozeroy",
+        fillcolor="rgba(59,130,246,0.08)",
         hovertemplate="Período: %{x}<br>Casos: %{y}<extra></extra>",
     ))
     fig.add_trace(go.Scatter(
-        x=df["period"],
-        y=df["avg_score"],
-        mode="lines",
-        name="Score médio",
-        yaxis="y2",
-        line=dict(color="#e74c3c", width=1.5, dash="dash"),
-        hovertemplate="Período: %{x}<br>Score médio: %{y:.2f}<extra></extra>",
+        x=df["period"], y=df["avg_score"],
+        mode="lines", name="Score médio", yaxis="y2",
+        line=dict(color="#EF4444", width=1.5, dash="dot"),
+        hovertemplate="Score médio: %{y:.2f}<extra></extra>",
     ))
     fig.update_layout(
-        title_text="Evolução Temporal dos Casos",
+        **_DARK_TEMPLATE["layout"],
+        title_text="Evolução Temporal",
         xaxis_title="Período",
-        yaxis=dict(title="Nº de Casos"),
-        yaxis2=dict(title="Score Médio", overlaying="y", side="right", showgrid=False),
-        legend=dict(x=0, y=1.1, orientation="h"),
-        margin=dict(t=60, b=50, l=60, r=60),
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
+        yaxis=dict(title="Nº de Casos", gridcolor="rgba(255,255,255,0.05)",
+                   tickfont=dict(color="#4B5563")),
+        yaxis2=dict(title="Score Médio", overlaying="y", side="right",
+                    showgrid=False, tickfont=dict(color="#4B5563")),
+        legend=dict(x=0, y=1.12, orientation="h", bgcolor="rgba(0,0,0,0)"),
+        margin=dict(t=50, b=40, l=50, r=60),
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#ecf0f1", tickangle=-30)
-    fig.update_yaxes(showgrid=True, gridcolor="#ecf0f1")
+    fig.update_xaxes(showgrid=False, tickangle=-25)
     return fig
 
 
@@ -156,21 +190,21 @@ def bar_top_terms(rows: List[Dict[str, Any]], top_n: int = 15) -> go.Figure:
         orientation="h",
         marker=dict(
             color=df["avg_weight"],
-            colorscale="RdYlGn_r",
+            colorscale=[[0,"#3B82F6"],[0.5,"#EAB308"],[1,"#EF4444"]],
             showscale=True,
-            colorbar=dict(title="Peso"),
+            colorbar=dict(title="Peso", tickfont=dict(color="#4B5563"),
+                          titlefont=dict(color="#64748B")),
         ),
         text=df["freq"],
         textposition="outside",
-        hovertemplate="<b>%{y}</b><br>Frequência: %{x}<br>Peso médio: %{marker.color:.2f}<extra></extra>",
+        hovertemplate="<b>%{y}</b><br>Freq: %{x}<br>Peso: %{marker.color:.2f}<extra></extra>",
     ))
     fig.update_layout(
-        title_text=f"Top {top_n} Termos Detectados",
+        **_DARK_TEMPLATE["layout"],
+        title_text=f"Top {top_n} Termos",
         xaxis_title="Frequência",
         yaxis_title="",
-        margin=dict(t=50, b=40, l=160, r=80),
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=44, b=20, l=160, r=80),
     )
     fig.update_xaxes(showgrid=True, gridcolor="#ecf0f1")
     return fig

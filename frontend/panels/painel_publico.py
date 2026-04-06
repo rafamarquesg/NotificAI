@@ -31,11 +31,16 @@ from components.upload_widget import render_upload_section, render_folder_monito
 
 def render(conn: sqlite3.Connection) -> None:
     """Renderiza o Painel Público completo."""
-    st.title("NotificAI — Painel Público")
-    st.caption(
-        "Dados agregados e anônimos sobre notificações de violência e agravos à saúde. "
-        "Nenhuma informação de identificação pessoal é exibida neste painel."
-    )
+    st.markdown("""
+    <div style="margin-bottom:20px;">
+        <div style="color:#F1F5F9;font-size:1.4rem;font-weight:700;margin-bottom:4px;">
+            Painel de Vigilância
+        </div>
+        <div style="color:#4B5563;font-size:0.83rem;">
+            Dados agregados e anônimos · Nenhum dado pessoal é exibido neste painel
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # -----------------------------------------------------------------------
     # Métricas gerais com comparação de período

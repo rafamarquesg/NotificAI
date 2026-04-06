@@ -1,16 +1,5 @@
 """
-Estação de Trabalho do Técnico NUVE — tela principal de revisão de casos.
-
-Design de tela única (sem troca de abas para o fluxo principal):
-  - Coluna esquerda  : Worklist de triagem com código de cor por severidade
-  - Coluna direita   : Caso selecionado — análise da IA + decisão + ficha SINAN
-
-Fluxo do técnico:
-  1. Abre o NotificAI → vê fila priorizada por score
-  2. Clica em um caso → vê texto com termos destacados + análise da IA
-  3. Decide: CONFIRMAR / RECLASSIFICAR / ARQUIVAR
-  4. Após confirmar → baixa ficha SINAN pré-preenchida
-  5. Clica "Próximo caso" → retorna automaticamente para o próximo pendente
+Estação de Trabalho do Técnico NUVE — redesign moderno.
 """
 
 import hashlib
@@ -22,10 +11,8 @@ from typing import Optional
 import streamlit as st
 
 from core.database import (
-    get_analysis_detail,
-    get_detections,
-    log_access,
-    priority_queue_filtered,
+    get_analysis_detail, get_detections, log_access,
+    priority_queue_filtered, get_patient_timeline,
 )
 from components.case_worklist import render_worklist
 from components.text_viewer import render_text_viewer
@@ -33,49 +20,68 @@ from components.decision_panel import render_decision_panel
 from components.sinan_form import render_sinan_form
 from components.upload_widget import render_upload_section
 
-# ---------------------------------------------------------------------------
-# Autenticação (reutiliza a mesma senha do Painel Seguro)
-# ---------------------------------------------------------------------------
-
-_DEFAULT_PASSWORD_HASH = os.environ.get(
+_DEFAULT_HASH = os.environ.get(
     "NOTIFICAI_ADMIN_HASH",
     hashlib.sha256(b"notificai2024").hexdigest(),
 )
 
+_SEV_COLOR = {
+    "CRÍTICO": "#EF4444", "ALTO": "#F97316",
+    "MODERADO": "#EAB308", "BAIXO": "#3B82F6",
+}
+_SEV_GLOW = {
+    "CRÍTICO": "rgba(239,68,68,0.25)", "ALTO": "rgba(249,115,22,0.2)",
+    "MODERADO": "rgba(234,179,8,0.2)", "BAIXO": "rgba(59,130,246,0.15)",
+}
 
-def _check_password(password: str) -> bool:
-    return hashlib.sha256(password.encode()).hexdigest() == _DEFAULT_PASSWORD_HASH
+
+def _check_pw(pw: str) -> bool:
+    return hashlib.sha256(pw.encode()).hexdigest() == _DEFAULT_HASH
 
 
-def _login_form() -> None:
-    st.markdown(
-        """
+# ---------------------------------------------------------------------------
+# Login
+# ---------------------------------------------------------------------------
+def _login() -> None:
+    st.markdown("""
+    <div style="
+        min-height:70vh; display:flex; align-items:center; justify-content:center;
+    ">
         <div style="
-            max-width:420px;
-            margin:60px auto 0;
-            background:#1e2c3a;
-            border-radius:12px;
-            padding:32px 36px;
+            background:linear-gradient(145deg,#141C2E,#0F1623);
+            border:1px solid rgba(255,255,255,0.07);
+            border-radius:20px; padding:48px 52px;
+            width:100%; max-width:420px;
+            box-shadow:0 24px 64px rgba(0,0,0,0.5);
             text-align:center;
         ">
-            <div style="font-size:2.5rem;">🏥</div>
-            <h2 style="color:#ecf0f1;margin:8px 0 4px;">NotificAI</h2>
-            <p style="color:#7f8c8d;font-size:0.9rem;">
-                Estação de Trabalho NUVE — Acesso Restrito
-            </p>
+            <div style="
+                width:56px;height:56px;margin:0 auto 20px;
+                background:linear-gradient(135deg,#3B82F6,#1D4ED8);
+                border-radius:16px;display:flex;align-items:center;
+                justify-content:center;font-size:1.6rem;
+                box-shadow:0 8px 24px rgba(59,130,246,0.4);
+            ">🏥</div>
+            <div style="color:#F1F5F9;font-size:1.4rem;font-weight:700;margin-bottom:4px;">
+                NotificAI
+            </div>
+            <div style="color:#4B5563;font-size:0.83rem;margin-bottom:32px;">
+                Estação de Trabalho · NUVE HC-FMUSP
+            </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    </div>
+    """, unsafe_allow_html=True)
+
     col = st.columns([1, 2, 1])[1]
     with col:
-        st.markdown("")
-        with st.form("tecnico_login"):
-            password  = st.text_input("Senha", type="password", placeholder="Senha de acesso")
-            submitted = st.form_submit_button("Entrar", type="primary", use_container_width=True)
-        if submitted:
-            if _check_password(password):
-                st.session_state["tecnico_auth"]       = True
+        with st.form("tecnico_login", clear_on_submit=False):
+            pw = st.text_input("Senha de acesso", type="password",
+                               placeholder="••••••••••••",
+                               label_visibility="collapsed")
+            ok = st.form_submit_button("Entrar", type="primary", use_container_width=True)
+        if ok:
+            if _check_pw(pw):
+                st.session_state["tecnico_auth"] = True
                 st.session_state["tecnico_session_id"] = str(uuid.uuid4())
                 st.rerun()
             else:
@@ -83,306 +89,309 @@ def _login_form() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Painel principal
+# Render principal
 # ---------------------------------------------------------------------------
-
 def render(conn: sqlite3.Connection) -> None:
     if not st.session_state.get("tecnico_auth"):
-        _login_form()
+        _login()
         return
 
-    session_id: str = st.session_state.get("tecnico_session_id", "")
-    log_access(conn, "view_tecnico_panel", session_id=session_id)
+    sid: str = st.session_state.get("tecnico_session_id", "")
+    log_access(conn, "view_tecnico_panel", session_id=sid)
 
-    # ------------------------------------------------------------------
-    # Barra superior
-    # ------------------------------------------------------------------
-    _render_topbar(conn, session_id)
-    st.markdown(
-        "<hr style='margin:0 0 12px;border-color:#2c3e50;'>",
-        unsafe_allow_html=True,
-    )
+    _topbar(conn, sid)
 
-    # ------------------------------------------------------------------
-    # Layout principal: fila (25%) | caso (75%)
-    # ------------------------------------------------------------------
-    col_list, col_case = st.columns([1, 3], gap="medium")
+    col_left, col_right = st.columns([1, 3], gap="medium")
 
-    # ------ Coluna esquerda: worklist ------
-    with col_list:
-        def _select(aid: str) -> None:
-            st.session_state["tecnico_case_id"]   = aid
+    with col_left:
+        def _sel(aid: str):
+            st.session_state["tecnico_case_id"]    = aid
             st.session_state["tecnico_show_sinan"] = False
-            st.session_state.pop("tecnico_sinan_clicked", None)
-            # Limpa ações do painel de decisão anterior
-            for k in list(st.session_state.keys()):
+            for k in list(st.session_state):
                 if k.startswith("dp_action_"):
                     del st.session_state[k]
 
-        render_worklist(
-            conn,
-            on_select=_select,
-            selected_id=st.session_state.get("tecnico_case_id"),
-        )
+        render_worklist(conn, on_select=_sel,
+                        selected_id=st.session_state.get("tecnico_case_id"))
 
-    # ------ Coluna direita: caso selecionado ------
-    with col_case:
-        case_id: Optional[str] = st.session_state.get("tecnico_case_id")
-
-        if not case_id:
-            _render_empty_state()
+    with col_right:
+        cid: Optional[str] = st.session_state.get("tecnico_case_id")
+        if not cid:
+            _empty_state()
         else:
-            _render_case(conn, case_id, session_id)
+            _case_view(conn, cid, sid)
 
 
 # ---------------------------------------------------------------------------
-# Barra superior
+# Topbar
 # ---------------------------------------------------------------------------
+def _topbar(conn: sqlite3.Connection, sid: str) -> None:
+    c1, c2, c3, c4 = st.columns([3, 1.2, 0.7, 0.5], gap="small")
 
-def _render_topbar(conn: sqlite3.Connection, session_id: str) -> None:
-    col_logo, col_title, col_upload, col_refresh, col_logout = st.columns(
-        [0.3, 2, 1.5, 0.6, 0.5], gap="small"
-    )
+    c1.markdown("""
+    <div style="padding-top:6px;">
+        <span style="color:#F1F5F9;font-size:1rem;font-weight:600;">
+            Estação de Trabalho
+        </span>
+        <span style="color:#374151;font-size:0.8rem;margin-left:8px;">
+            Técnico NUVE
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
 
-    col_logo.markdown(
-        "<div style='font-size:1.8rem;line-height:1;padding-top:6px;'>🏥</div>",
-        unsafe_allow_html=True,
-    )
-    col_title.markdown(
-        "<div style='color:#ecf0f1;font-size:1.1rem;font-weight:700;padding-top:8px;'>"
-        "Estação de Trabalho — Técnico NUVE</div>",
-        unsafe_allow_html=True,
-    )
-
-    with col_upload.expander("📂 Inserir documento"):
+    with c2.expander("📂 Inserir documento"):
         render_upload_section(conn)
 
-    if col_refresh.button("🔄 Atualizar", use_container_width=True):
+    if c3.button("🔄 Atualizar", use_container_width=True):
         st.cache_resource.clear()
         st.rerun()
 
-    if col_logout.button("Sair", use_container_width=True):
-        log_access(conn, "logout_tecnico", session_id=session_id)
-        st.session_state["tecnico_auth"]       = False
-        st.session_state["tecnico_session_id"] = None
-        st.session_state.pop("tecnico_case_id", None)
+    if c4.button("Sair", use_container_width=True):
+        log_access(conn, "logout_tecnico", session_id=sid)
+        for k in ["tecnico_auth", "tecnico_session_id", "tecnico_case_id"]:
+            st.session_state.pop(k, None)
         st.rerun()
+
+    st.markdown("<hr style='margin:8px 0 0;'>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
 # Estado vazio
 # ---------------------------------------------------------------------------
-
-def _render_empty_state() -> None:
-    st.markdown(
-        """
+def _empty_state() -> None:
+    st.markdown("""
+    <div style="
+        display:flex;flex-direction:column;align-items:center;justify-content:center;
+        min-height:60vh;text-align:center;padding:40px;
+    ">
         <div style="
-            text-align:center;
-            padding:80px 20px;
-            color:#7f8c8d;
-        ">
-            <div style="font-size:4rem;">📋</div>
-            <h3 style="color:#bdc3c7;">Nenhum caso selecionado</h3>
-            <p>Selecione um caso na fila à esquerda para iniciar a revisão.</p>
-            <p style="font-size:0.85rem;">
-                Casos vermelhos são <strong style="color:#e74c3c;">CRÍTICOS</strong> e
-                devem ser revisados primeiro.
-            </p>
+            width:72px;height:72px;
+            background:rgba(59,130,246,0.08);
+            border:1px solid rgba(59,130,246,0.15);
+            border-radius:20px;
+            display:flex;align-items:center;justify-content:center;
+            font-size:2rem;margin-bottom:20px;
+        ">📋</div>
+        <div style="color:#E2E8F0;font-size:1.05rem;font-weight:600;margin-bottom:8px;">
+            Nenhum caso selecionado
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        <div style="color:#4B5563;font-size:0.85rem;max-width:320px;line-height:1.6;">
+            Selecione um caso na fila à esquerda para iniciar a revisão.
+            Casos <span style="color:#EF4444;font-weight:600;">CRÍTICOS</span>
+            têm prioridade máxima.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
-# Visualização do caso selecionado
+# Visualização do caso
 # ---------------------------------------------------------------------------
-
-def _render_case(conn: sqlite3.Connection, case_id: str, session_id: str) -> None:
-    detail = get_analysis_detail(conn, case_id)
+def _case_view(conn: sqlite3.Connection, cid: str, sid: str) -> None:
+    detail = get_analysis_detail(conn, cid)
     if not detail:
-        st.warning("Caso não encontrado. Pode ter sido removido.")
+        st.warning("Caso não encontrado.")
         st.session_state.pop("tecnico_case_id", None)
         return
 
-    log_access(conn, "view_case", patient_hash=detail.get("patient_hash"), session_id=session_id)
+    log_access(conn, "view_case", patient_hash=detail.get("patient_hash"), session_id=sid)
 
-    # ------------------------------------------------------------------
-    # Cabeçalho do caso
-    # ------------------------------------------------------------------
-    ntype      = detail.get("notification_type", "—")
-    score      = detail.get("score", 0.0)
-    confidence = detail.get("confidence", 0.0)
-    severity   = detail.get("severity_level", "—")
-    filename   = detail.get("filename", "—")
-    doc_type   = detail.get("document_type") or "—"
-    case_status = detail.get("case_status", "pendente")
+    ntype    = detail.get("notification_type", "—")
+    score    = detail.get("score", 0.0)
+    conf     = detail.get("confidence", 0.0)
+    severity = detail.get("severity_level", "—")
+    fname    = detail.get("filename", "—")
+    doc_type = detail.get("document_type") or "—"
+    status   = detail.get("case_status", "pendente")
 
-    _SEV_COLOR = {
-        "CRÍTICO": "#e74c3c", "ALTO": "#e67e22",
-        "MODERADO": "#f1c40f", "BAIXO": "#3498db",
-    }
-    sev_color = _SEV_COLOR.get(severity, "#7f8c8d")
+    col  = _SEV_COLOR.get(severity, "#6B7280")
+    glow = _SEV_GLOW.get(severity, "rgba(107,114,128,0.1)")
+    score_pct = min(int(score / 25 * 100), 100)
 
-    st.markdown(
-        f"""
-        <div style="
-            background:#1e2c3a;
-            border-left:5px solid {sev_color};
-            border-radius:0 8px 8px 0;
-            padding:12px 16px;
-            margin-bottom:12px;
-            display:flex;
-            flex-wrap:wrap;
-            gap:16px;
-            align-items:center;
-        ">
-            <div>
-                <div style="color:#7f8c8d;font-size:0.72rem;text-transform:uppercase;">Documento</div>
-                <div style="color:#ecf0f1;font-size:0.9rem;font-weight:600;max-width:260px;
-                    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{filename}</div>
-                <div style="color:#7f8c8d;font-size:0.78rem;">{doc_type}</div>
+    # ── Cabeçalho do caso ─────────────────────────────────────────────
+    st.markdown(f"""
+    <div style="
+        background:linear-gradient(135deg,#141C2E,#0F1623);
+        border:1px solid rgba(255,255,255,0.07);
+        border-left:4px solid {col};
+        border-radius:0 12px 12px 0;
+        padding:16px 20px;
+        margin-bottom:16px;
+        box-shadow:inset 4px 0 20px {glow};
+    ">
+        <div style="display:flex;flex-wrap:wrap;gap:24px;align-items:center;">
+
+            <div style="flex:1;min-width:180px;">
+                <div style="color:#4B5563;font-size:0.68rem;text-transform:uppercase;
+                    letter-spacing:0.07em;margin-bottom:3px;">Documento</div>
+                <div style="color:#F1F5F9;font-size:0.9rem;font-weight:600;
+                    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px;">
+                    {fname}
+                </div>
+                <div style="color:#4B5563;font-size:0.75rem;margin-top:1px;">{doc_type}</div>
             </div>
+
             <div>
-                <div style="color:#7f8c8d;font-size:0.72rem;text-transform:uppercase;">Classificação IA</div>
-                <div style="color:#ecf0f1;font-size:0.9rem;font-weight:600;">{ntype}</div>
-                <div style="color:#7f8c8d;font-size:0.78rem;">confiança {confidence:.0%}</div>
+                <div style="color:#4B5563;font-size:0.68rem;text-transform:uppercase;
+                    letter-spacing:0.07em;margin-bottom:3px;">Classificação IA</div>
+                <div style="color:#60A5FA;font-size:0.9rem;font-weight:600;">{ntype}</div>
+                <div style="color:#4B5563;font-size:0.75rem;margin-top:1px;">
+                    {conf:.0%} de confiança
+                </div>
             </div>
+
             <div>
-                <div style="color:#7f8c8d;font-size:0.72rem;text-transform:uppercase;">Score / Severidade</div>
-                <div style="color:{sev_color};font-size:0.95rem;font-weight:700;">{severity}</div>
-                <div style="color:#7f8c8d;font-size:0.78rem;">{score:.1f} pts</div>
+                <div style="color:#4B5563;font-size:0.68rem;text-transform:uppercase;
+                    letter-spacing:0.07em;margin-bottom:3px;">Score / Severidade</div>
+                <div style="color:{col};font-size:0.95rem;font-weight:700;
+                    text-shadow:0 0 12px {col}88;">{severity}</div>
+                <div style="background:rgba(255,255,255,0.07);border-radius:4px;
+                    height:4px;width:80px;margin-top:5px;">
+                    <div style="background:{col};width:{score_pct}%;
+                        height:4px;border-radius:4px;opacity:0.9;"></div>
+                </div>
+                <div style="color:#4B5563;font-size:0.7rem;margin-top:2px;">{score:.1f} pts</div>
             </div>
+
             <div>
-                <div style="color:#7f8c8d;font-size:0.72rem;text-transform:uppercase;">Status</div>
-                <div style="color:#ecf0f1;font-size:0.85rem;">{case_status.upper()}</div>
+                <div style="color:#4B5563;font-size:0.68rem;text-transform:uppercase;
+                    letter-spacing:0.07em;margin-bottom:5px;">Status</div>
+                <div style="
+                    display:inline-block;
+                    background:rgba(255,255,255,0.06);
+                    border:1px solid rgba(255,255,255,0.1);
+                    border-radius:20px;padding:3px 12px;
+                    color:#94A3B8;font-size:0.78rem;font-weight:500;
+                ">{status.upper()}</div>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    </div>
+    """, unsafe_allow_html=True)
 
-    # ------------------------------------------------------------------
-    # Abas internas (sem abandonar o caso)
-    # ------------------------------------------------------------------
-    tab_analysis, tab_sinan, tab_history = st.tabs([
-        "🔍 Análise & Decisão",
-        "📋 Ficha SINAN",
-        "⏱️ Histórico do Paciente",
+    # ── Abas ──────────────────────────────────────────────────────────
+    tab_a, tab_s, tab_h = st.tabs([
+        "🔍  Análise & Decisão",
+        "📋  Ficha SINAN",
+        "⏱️  Histórico do Paciente",
     ])
 
-    with tab_analysis:
-        _render_analysis_tab(conn, case_id, session_id, detail)
+    with tab_a:
+        _tab_analysis(conn, cid, sid, detail)
 
-    with tab_sinan:
-        show_sinan = (
-            st.session_state.get("tecnico_show_sinan")
-            or case_status == "notificado"
-        )
-        if show_sinan:
-            render_sinan_form(conn, case_id, session_id, show_patient=True)
+    with tab_s:
+        if st.session_state.get("tecnico_show_sinan") or status == "notificado":
+            render_sinan_form(conn, cid, sid, show_patient=True)
         else:
-            st.info(
-                "A ficha SINAN ficará disponível após **Confirmar e Notificar** "
-                "na aba **Análise & Decisão**."
-            )
-            if st.button("Abrir ficha mesmo assim", key=f"force_sinan_{case_id}"):
+            st.markdown("""
+            <div style="
+                background:rgba(59,130,246,0.06);
+                border:1px solid rgba(59,130,246,0.15);
+                border-radius:12px;padding:32px;text-align:center;margin:12px 0;
+            ">
+                <div style="font-size:2rem;margin-bottom:10px;">📋</div>
+                <div style="color:#93C5FD;font-weight:600;margin-bottom:6px;">
+                    Ficha SINAN disponível após confirmação
+                </div>
+                <div style="color:#4B5563;font-size:0.83rem;">
+                    Confirme ou reclassifique o caso na aba <strong>Análise & Decisão</strong>.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Abrir ficha mesmo assim", key=f"force_sinan_{cid}"):
                 st.session_state["tecnico_show_sinan"] = True
                 st.rerun()
 
-    with tab_history:
-        _render_history_tab(conn, detail, case_id, session_id)
+    with tab_h:
+        _tab_history(conn, detail, cid, sid)
 
 
-def _render_analysis_tab(conn, case_id, session_id, detail):
-    """Aba principal: texto com destaques + decisão."""
-    detections = get_detections(conn, case_id)
+# ---------------------------------------------------------------------------
+# Aba Análise
+# ---------------------------------------------------------------------------
+def _tab_analysis(conn, cid, sid, detail):
+    detections = get_detections(conn, cid)
+    active  = [d for d in detections if not d.get("negated")]
+    negated = [d for d in detections if d.get("negated")]
 
-    # Score bar visual
-    score = detail.get("score", 0.0)
-    score_pct = min(int(score / 30 * 100), 100)
-    sev_color = {
-        "CRÍTICO": "#e74c3c", "ALTO": "#e67e22",
-        "MODERADO": "#f1c40f", "BAIXO": "#3498db",
-    }.get(detail.get("severity_level", ""), "#7f8c8d")
-
-    st.markdown(
-        f"""
-        <div style="margin-bottom:10px;">
-            <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-                <span style="color:#7f8c8d;font-size:0.78rem;">Score de risco</span>
-                <span style="color:{sev_color};font-size:0.78rem;font-weight:600;">
-                    {score:.1f} / 30+
-                </span>
-            </div>
-            <div style="background:#2c3e50;border-radius:6px;height:8px;">
-                <div style="background:{sev_color};width:{score_pct}%;height:8px;
-                    border-radius:6px;transition:width 0.3s;"></div>
-            </div>
+    # Mini-stats das detecções
+    st.markdown(f"""
+    <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+        <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);
+            border-radius:8px;padding:8px 14px;text-align:center;">
+            <div style="color:#EF4444;font-size:1.1rem;font-weight:700;">{len(active)}</div>
+            <div style="color:#4B5563;font-size:0.7rem;">termos ativos</div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        <div style="background:rgba(107,114,128,0.08);border:1px solid rgba(107,114,128,0.15);
+            border-radius:8px;padding:8px 14px;text-align:center;">
+            <div style="color:#9CA3AF;font-size:1.1rem;font-weight:700;">{len(negated)}</div>
+            <div style="color:#4B5563;font-size:0.7rem;">negados</div>
+        </div>
+        <div style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.15);
+            border-radius:8px;padding:8px 14px;text-align:center;">
+            <div style="color:#60A5FA;font-size:1.1rem;font-weight:700;">
+                {len(set(d['category'] for d in active))}
+            </div>
+            <div style="color:#4B5563;font-size:0.7rem;">categorias</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # Detecções em destaque
-    st.markdown(f"**{len(detections)} termo(s) detectado(s)** · "
-                f"{sum(1 for d in detections if not d.get('negated'))} ativos · "
-                f"{sum(1 for d in detections if d.get('negated'))} negados")
+    render_text_viewer(conn, cid)
+    st.markdown("<hr>", unsafe_allow_html=True)
 
-    render_text_viewer(conn, case_id)
-
-    st.markdown("---")
-
-    # Painel de decisão
-    def _next_case():
+    def _next():
         cases = priority_queue_filtered(conn, limit=50, status_filter="pendente")
-        # Encontrar o próximo na lista (excluindo o atual)
-        others = [c for c in cases if c["analysis_id"] != case_id]
+        others = [c for c in cases if c["analysis_id"] != cid]
         if others:
             st.session_state["tecnico_case_id"]    = others[0]["analysis_id"]
             st.session_state["tecnico_show_sinan"] = False
-            for k in list(st.session_state.keys()):
+            for k in list(st.session_state):
                 if k.startswith("dp_action_"):
                     del st.session_state[k]
             st.rerun()
         else:
-            st.success("🎉 Nenhum caso pendente na fila. Bom trabalho!")
+            st.success("🎉 Nenhum caso pendente restante.")
 
-    render_decision_panel(
-        conn,
-        analysis_id=case_id,
-        session_id=session_id,
+    render_decision_panel(conn, cid, sid,
         on_confirmed=lambda: st.session_state.update({"tecnico_show_sinan": True}),
-        on_next_case=_next_case,
+        on_next_case=_next,
     )
 
 
-def _render_history_tab(conn, detail, case_id, session_id):
-    """Aba de histórico do paciente (reincidência)."""
+# ---------------------------------------------------------------------------
+# Aba Histórico
+# ---------------------------------------------------------------------------
+def _tab_history(conn, detail, cid, sid):
     from components.timeline_viewer import render_patient_timeline
-
-    patient_hash = detail.get("patient_hash") or ""
-    if not patient_hash:
+    ph = detail.get("patient_hash") or ""
+    if not ph:
         st.info("Hash do paciente não disponível.")
         return
 
-    log_access(conn, "view_patient_history", patient_hash=patient_hash, session_id=session_id)
+    log_access(conn, "view_patient_history", patient_hash=ph, session_id=sid)
+    timeline = get_patient_timeline(conn, ph)
+    prev = [t for t in timeline if t["analysis_id"] != cid]
 
-    # Verificar reincidência
-    from core.database import get_patient_timeline
-    timeline = get_patient_timeline(conn, patient_hash)
-    prev = [t for t in timeline if t["analysis_id"] != case_id]
+    if prev:
+        st.markdown(f"""
+        <div style="
+            background:rgba(249,115,22,0.08);
+            border:1px solid rgba(249,115,22,0.25);
+            border-left:4px solid #F97316;
+            border-radius:0 10px 10px 0;
+            padding:12px 16px;margin-bottom:14px;
+        ">
+            <div style="color:#FB923C;font-weight:600;font-size:0.88rem;">
+                ⚠️ Reincidência detectada
+            </div>
+            <div style="color:#4B5563;font-size:0.82rem;margin-top:2px;">
+                Este paciente possui <strong style="color:#F97316;">{len(prev)}</strong>
+                ocorrência(s) anterior(es) no sistema.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    if len(prev) > 0:
-        st.warning(
-            f"⚠️ **Reincidência detectada**: este paciente possui "
-            f"**{len(prev)} ocorrência(s) anterior(es)** no sistema."
-        )
-
-    render_patient_timeline(
-        conn,
-        patient_hash=patient_hash,
-        session_id=session_id,
+    render_patient_timeline(conn, patient_hash=ph, session_id=sid,
         on_select_analysis=lambda aid: st.session_state.update(
             {"tecnico_case_id": aid, "tecnico_show_sinan": False}
         ),

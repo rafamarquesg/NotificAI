@@ -699,7 +699,112 @@ class EnhancedTextExtractor:
         return text, metadata, pages_info
 
     def _is_sufficient_text(self, text: str) -> bool:
-        """Verifica se o texto é suficiente"""
+        """Verifica se o texto extraído possui caracteres suficientes para análise."""
         if not text:
             return False
-       
+        return len(text.strip()) >= self.config.min_text_quality_chars
+
+    def _assess_text_quality(self, text: str) -> QualityLevel:
+        """Classifica a qualidade do texto extraído com base na contagem de caracteres."""
+        char_count = len(text.strip())
+        if char_count >= 2000:
+            return QualityLevel.EXCELLENT
+        if char_count >= 500:
+            return QualityLevel.GOOD
+        if char_count >= self.config.min_text_quality_chars:
+            return QualityLevel.FAIR
+        return QualityLevel.POOR
+
+    def _clean_text(self, text: str) -> str:
+        """Normaliza o texto: remove separadores de página, espaços extras e caracteres de controle."""
+        # Remover marcadores de página inseridos durante a extração
+        text = re.sub(r'\n?---\s*PÁGINA\s+\d+\s*(?:\(OCR\))?\s*---\n?', '\n', text)
+        # Colapsar múltiplas linhas em branco
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        # Remover caracteres de controle (exceto \n e \t)
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+        # Normalizar espaços dentro das linhas
+        text = re.sub(r'[ \t]+', ' ', text)
+        return text.strip()
+
+
+# CLASSIFICADOR DE DOCUMENTOS
+
+class DocumentClassifier:
+    """Classifica o tipo de documento médico com base no texto extraído."""
+
+    _PATTERNS: Dict[DocumentType, List[str]] = {
+        DocumentType.EVOLUCAO_MEDICA: [
+            "evolução médica", "evolucao medica", "evolução diária",
+            "médico responsável", "CRM", "prescrição médica",
+        ],
+        DocumentType.ANOTACOES_ENFERMAGEM: [
+            "anotação de enfermagem", "anotações de enfermagem",
+            "coren", "enfermeiro", "técnico de enfermagem",
+            "auxiliar de enfermagem", "sinais vitais",
+        ],
+        DocumentType.MULTIPROFISSIONAL: [
+            "multiprofissional", "equipe multidisciplinar",
+            "fisioterapia", "nutrição", "psicologia", "serviço social",
+            "assistente social",
+        ],
+    }
+
+    def classify(self, text: str) -> DocumentType:
+        """Retorna o tipo de documento detectado ou DocumentType.OUTROS."""
+        text_lower = text.lower()
+        scores: Dict[DocumentType, int] = {dt: 0 for dt in self._PATTERNS}
+        for doc_type, keywords in self._PATTERNS.items():
+            for kw in keywords:
+                if kw.lower() in text_lower:
+                    scores[doc_type] += 1
+        best = max(scores, key=lambda dt: scores[dt])
+        return best if scores[best] > 0 else DocumentType.OUTROS
+
+
+# EXTRATOR DE METADADOS
+
+class DocumentMetadataExtractor:
+    """Extrai metadados estruturados do texto do documento."""
+
+    _DATE_PATTERN = re.compile(
+        r'\b(\d{2}[/\-]\d{2}[/\-]\d{4}|\d{4}[/\-]\d{2}[/\-]\d{2})\b'
+    )
+    _AUTHOR_PATTERN = re.compile(
+        r'(?:Dr\.?|Dra\.?|Enf\.?)\s+([A-ZÀ-Ú][a-zà-ú]+(?:\s+[A-ZÀ-Ú][a-zà-ú]+)*)',
+        re.IGNORECASE,
+    )
+    _SERVICE_PATTERN = re.compile(
+        r'(?:serviço|setor|unidade|ala)\s*(?:de\s+)?([A-ZÀ-Úa-zà-ú\s]{3,40})',
+        re.IGNORECASE,
+    )
+
+    def __init__(self):
+        self.classifier = DocumentClassifier()
+
+    def extract_metadata(
+        self, text: str, pages_info: List[PageInfo]
+    ) -> DocumentMetadata:
+        """Extrai data, tipo de documento, autor e serviço do texto."""
+        # Data: pegar a primeira ocorrência
+        date_match = self._DATE_PATTERN.search(text)
+        document_date = date_match.group(0) if date_match else None
+
+        # Tipo de documento
+        doc_type = self.classifier.classify(text)
+
+        # Autor
+        author_match = self._AUTHOR_PATTERN.search(text)
+        author = author_match.group(0) if author_match else None
+
+        # Serviço
+        service_match = self._SERVICE_PATTERN.search(text)
+        service = service_match.group(1).strip() if service_match else None
+
+        return DocumentMetadata(
+            document_date=document_date,
+            document_type=doc_type,
+            creation_date=datetime.now(pytz.timezone("America/Sao_Paulo")).isoformat(),
+            author=author,
+            service=service,
+        )

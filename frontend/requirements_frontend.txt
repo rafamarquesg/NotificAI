@@ -1,0 +1,18 @@
+# NotificAI Frontend Dependencies
+streamlit>=1.35.0
+plotly>=5.20.0
+pandas>=2.0.0
+watchdog>=4.0.0
+
+# Backend dependencies (shared)
+numpy>=1.24.0
+scikit-learn>=1.3.0
+joblib>=1.3.0
+
+# PDF extraction
+pdfminer.six>=20221105
+pymupdf>=1.23.0
+
+# Optional: ML/BERT (comment out if not using GPU/BERT)
+# torch>=2.1.0
+# transformers>=4.38.0

@@ -1,4 +1,4 @@
-from src.utils import hash_text
+from utils import hash_text
 
 def test_hash_text():
     text = "Exemplo"

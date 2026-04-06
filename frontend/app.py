@@ -74,9 +74,9 @@ conn = _get_conn()
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.image(
-        "https://img.icons8.com/ios-filled/100/ffffff/hospital.png",
-        width=60,
+    st.markdown(
+        "<div style='font-size:2.2rem;text-align:center'>🏥</div>",
+        unsafe_allow_html=True,
     )
     st.markdown("## NotificAI")
     st.caption("Sistema de Apoio à Notificação de Violências")
@@ -100,7 +100,7 @@ with st.sidebar:
         st.info("⚪ Monitoramento inativo")
 
     st.markdown("---")
-    st.caption("v1.0 · 2024 · NUVE")
+    st.caption("v2.0 · 2025 · NUVE")
 
 # ---------------------------------------------------------------------------
 # Roteamento de página

@@ -1,27 +1,30 @@
 # PDF extraction
 pdfplumber
-pdf2image
-pytesseract
 PyMuPDF
 
 # Data / output
 pandas
 openpyxl
 
-# Google integrations (Colab)
-gspread
-google-auth
-
 # Testing
 pytest
 
-# ML / NLP — lexical + scikit-learn
+# ML / NLP — lexical + scikit-learn (base, sem GPU)
 numpy
 scikit-learn
 joblib
 
-# ML / NLP — BERT (BioBERTpt, BERTimbau) — instalar separadamente se GPU disponível
-# pip install torch transformers
-# ou com suporte CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu118
-torch
-transformers
+# -----------------------------------------------------------------
+# Dependências opcionais — instale conforme necessidade:
+# -----------------------------------------------------------------
+# BERT / BioBERTpt / BERTimbau (requer GPU para inferência eficiente)
+#   pip install torch transformers
+#   ou com CUDA 11.8:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu118
+#   pip install transformers
+
+# OCR (para PDFs escaneados)
+#   pip install pdf2image pytesseract
+
+# Google Colab / Sheets
+#   pip install gspread google-auth

@@ -423,12 +423,13 @@ def count_period_comparison(
     Compara o período atual com o anterior.
     Retorna: {current, previous, delta_abs, delta_pct}
     """
+    import datetime as _dt
     if freq == "week":
         period_sql = "strftime('%Y-W%W', analyzed_at)"
-        current_period = __import__("datetime").date.today().strftime("%Y-W%W")
+        current_period = _dt.date.today().strftime("%Y-W%W")
     else:
         period_sql = "strftime('%Y-%m', analyzed_at)"
-        current_period = __import__("datetime").date.today().strftime("%Y-%m")
+        current_period = _dt.date.today().strftime("%Y-%m")
 
     rows = conn.execute(
         f"SELECT {period_sql} AS period, COUNT(*) AS total "

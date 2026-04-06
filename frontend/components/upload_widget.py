@@ -48,7 +48,21 @@ def _result_card(result: ProcessingResult) -> None:
         cols[3].markdown(status_label)
 
         if result.error and result.status not in ("duplicado",):
-            st.warning(f"Aviso: {result.error}")
+            _ERROR_MESSAGES = {
+                "texto_insuficiente": (
+                    "📄 PDF sem texto extraível — provavelmente escaneado como imagem. "
+                    "Instale o **pytesseract** para ativar OCR automático: "
+                    "`pip install pytesseract Pillow` e instale o "
+                    "[Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki)."
+                ),
+                "ocr_indisponivel": (
+                    "🔍 PDF escaneado detectado mas OCR não está instalado. "
+                    "Execute: `pip install pytesseract Pillow` e instale o Tesseract."
+                ),
+                "ocr_erro": "⚠️ OCR falhou ao processar este PDF. Verifique se o Tesseract está instalado corretamente.",
+            }
+            msg = _ERROR_MESSAGES.get(result.error, f"⚠️ {result.error}")
+            st.warning(msg)
 
 
 # ---------------------------------------------------------------------------

@@ -168,6 +168,14 @@ def process_file(
             status = "erro_extracao"
             error_msg = str(exc)
             full_text = ""
+
+    # --- Fallback OCR para PDFs escaneados (sem texto digital) ---
+    if is_pdf and not full_text.strip():
+        full_text, page_count, extraction_method = _ocr_fallback(file_bytes)
+        if full_text:
+            status = "sucesso"
+            error_msg = None
+
     elif not is_pdf:
         # Texto puro
         try:
@@ -275,3 +283,46 @@ def _persist_analysis(
                     page_number, None,
                 ),
             )
+
+
+# ---------------------------------------------------------------------------
+# OCR fallback para PDFs escaneados (sem camada de texto)
+# ---------------------------------------------------------------------------
+
+def _ocr_fallback(file_bytes: bytes) -> tuple:
+    """
+    Tenta extrair texto via OCR (pytesseract + PyMuPDF) quando o PDF
+    não possui camada de texto digital.
+
+    Retorna: (texto_completo, num_paginas, metodo_extracao)
+    """
+    try:
+        import fitz  # PyMuPDF
+        try:
+            import pytesseract
+            from PIL import Image
+            import io as _io
+            HAS_TESS = True
+        except ImportError:
+            HAS_TESS = False
+
+        if not HAS_TESS:
+            return "", 0, "ocr_indisponivel"
+
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        pages_text = []
+
+        for page in doc:
+            # Renderizar página como imagem (150 DPI — suficiente para OCR)
+            mat  = fitz.Matrix(150 / 72, 150 / 72)
+            pix  = page.get_pixmap(matrix=mat, alpha=False)
+            img  = Image.open(_io.BytesIO(pix.tobytes("png")))
+            text = pytesseract.image_to_string(img, lang="por")
+            pages_text.append(text)
+
+        doc.close()
+        full_text = "\n\n".join(pages_text)
+        return full_text, len(pages_text), "ocr_pytesseract"
+
+    except Exception:
+        return "", 0, "ocr_erro"

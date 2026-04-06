@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.processor import process_file, ProcessingResult
+from core.ocr import get_ocr_status
 
 
 # ---------------------------------------------------------------------------
@@ -48,26 +49,112 @@ def _result_card(result: ProcessingResult) -> None:
         cols[3].markdown(status_label)
 
         if result.error and result.status not in ("duplicado",):
-            _ERROR_MESSAGES = {
-                "texto_insuficiente": (
-                    "📄 PDF sem texto extraível — provavelmente escaneado como imagem. "
-                    "Instale o **pytesseract** para ativar OCR automático: "
-                    "`pip install pytesseract Pillow` e instale o "
-                    "[Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki)."
-                ),
-                "ocr_indisponivel": (
-                    "🔍 PDF escaneado detectado mas OCR não está instalado. "
-                    "Execute: `pip install pytesseract Pillow` e instale o Tesseract."
-                ),
-                "ocr_erro": "⚠️ OCR falhou ao processar este PDF. Verifique se o Tesseract está instalado corretamente.",
-            }
-            msg = _ERROR_MESSAGES.get(result.error, f"⚠️ {result.error}")
-            st.warning(msg)
+            _render_error_card(result.error)
 
 
 # ---------------------------------------------------------------------------
 # Upload de arquivos
 # ---------------------------------------------------------------------------
+
+def _render_error_card(error: str) -> None:
+    """Renderiza card de erro contextualizado com instruções de resolução."""
+    if error.startswith("pdf_escaneado|"):
+        ocr_msg = error.split("|", 1)[1]
+        st.markdown(
+            f"""<div style="background:rgba(245,158,11,0.07);border-left:3px solid #F59E0B;
+            border-radius:0 8px 8px 0;padding:10px 14px;font-size:0.82rem;margin-top:4px;">
+            <div style="color:#FBBF24;font-weight:600;margin-bottom:4px;">
+                📄 PDF escaneado — texto não extraível diretamente
+            </div>
+            <div style="color:#4B5563;font-size:0.76rem;line-height:1.7;">
+                Para processar este arquivo, instale o OCR:
+                <ol style="margin:4px 0 0 16px;padding:0;">
+                    <li>Baixar <a href="https://github.com/UB-Mannheim/tesseract/wiki"
+                        target="_blank" style="color:#60A5FA;">Tesseract OCR (Windows)</a>
+                        — marcar <strong>Portuguese</strong></li>
+                    <li><code style="background:#141C2E;padding:1px 5px;border-radius:3px;
+                        color:#60A5FA;">pip install pytesseract</code></li>
+                    <li>Reiniciar o NotificAI e reenviar o arquivo</li>
+                </ol>
+            </div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+    elif error.startswith("ocr_erro"):
+        st.markdown(
+            f"""<div style="background:rgba(239,68,68,0.07);border-left:3px solid #EF4444;
+            border-radius:0 8px 8px 0;padding:10px 14px;font-size:0.82rem;margin-top:4px;">
+            <div style="color:#F87171;font-weight:600;">⚠️ OCR falhou neste arquivo</div>
+            <div style="color:#4B5563;font-size:0.76rem;margin-top:3px;">{error}</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+    elif error == "texto_insuficiente":
+        ocr = get_ocr_status()
+        if ocr.available:
+            st.markdown(
+                """<div style="background:rgba(107,114,128,0.08);border-left:3px solid #6B7280;
+                border-radius:0 8px 8px 0;padding:10px 14px;font-size:0.82rem;margin-top:4px;">
+                <div style="color:#9CA3AF;font-weight:600;">📄 Texto insuficiente para análise</div>
+                <div style="color:#4B5563;font-size:0.76rem;margin-top:2px;">
+                    O documento pode estar em branco ou conter apenas imagens não reconhecíveis.
+                </div></div>""",
+                unsafe_allow_html=True,
+            )
+        else:
+            _render_error_card(f"pdf_escaneado|{ocr.message}")
+    else:
+        st.warning(f"⚠️ {error}")
+
+
+def _render_ocr_status_banner() -> None:
+    """Exibe status do OCR em tempo real com instrução de instalação se necessário."""
+    ocr = get_ocr_status()
+    if ocr.available:
+        st.markdown(
+            f"""<div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2);
+            border-radius:8px;padding:8px 12px;font-size:0.78rem;color:#34D399;margin-bottom:10px;">
+            🔍 <strong>OCR ativo</strong> — Tesseract {ocr.version} · PDFs escaneados serão processados automaticamente.
+            </div>""",
+            unsafe_allow_html=True,
+        )
+    else:
+        # Detectar motivo e mostrar instrução correta
+        if "pytesseract" in ocr.message:
+            step1 = "✅ Tesseract instalado"
+            step2 = "❌ Falta: `pip install pytesseract`"
+            cmd   = "pip install pytesseract"
+        elif "Tesseract OCR não encontrado" in ocr.message:
+            step1 = "❌ Falta: instalar o Tesseract OCR (binário)"
+            step2 = "✅ pytesseract instalado"
+            cmd   = None
+        else:
+            step1 = ocr.message
+            step2 = ""
+            cmd   = None
+
+        st.markdown(
+            f"""<div style="background:rgba(245,158,11,0.07);border:1px solid rgba(245,158,11,0.2);
+            border-radius:8px;padding:10px 14px;font-size:0.78rem;margin-bottom:10px;">
+            <div style="color:#FBBF24;font-weight:600;margin-bottom:6px;">
+                ⚠️ OCR inativo — PDFs escaneados não serão lidos
+            </div>
+            <div style="color:#4B5563;line-height:1.7;">
+                {step1}<br>{step2}
+            </div>
+            {"<div style='margin-top:6px;'><strong style=color:#F1F5F9;>Para ativar:</strong></div>" if cmd or True else ""}
+            <ol style="color:#94A3B8;margin:4px 0 0 16px;padding:0;font-size:0.76rem;line-height:1.8;">
+                <li>Instalar o <a href="https://github.com/UB-Mannheim/tesseract/wiki"
+                    target="_blank" style="color:#60A5FA;">Tesseract OCR para Windows</a>
+                    — marcar <strong>Portuguese</strong> no instalador</li>
+                <li>Executar no terminal: <code style="background:#141C2E;padding:1px 6px;
+                    border-radius:4px;color:#60A5FA;">pip install pytesseract</code></li>
+                <li>Reiniciar o NotificAI</li>
+            </ol>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
 
 def render_upload_section(conn: sqlite3.Connection) -> None:
     """
@@ -77,6 +164,7 @@ def render_upload_section(conn: sqlite3.Connection) -> None:
     exibidos em cards abaixo do formulário.
     """
     st.subheader("Enviar Documentos")
+    _render_ocr_status_banner()
 
     uploaded = st.file_uploader(
         "Selecione um ou mais arquivos PDF ou TXT",

@@ -21,6 +21,7 @@ sys.path.insert(0, str(_BACKEND))
 from pipeline import AnalysisPipeline
 from core.database import transaction
 from core.anonymizer import extract_identifiers, upsert_patient
+from core.ocr import get_ocr_status, extract_text_ocr
 
 # Importar extrator de texto do complete.py (se disponível)
 try:
@@ -168,6 +169,20 @@ def process_file(
             status = "erro_extracao"
             error_msg = str(exc)
             full_text = ""
+
+    # --- Fallback OCR para PDFs sem texto digital ---
+    if is_pdf and not full_text.strip():
+        ocr_status = get_ocr_status()
+        if ocr_status.available:
+            try:
+                full_text, page_count, extraction_method = extract_text_ocr(file_bytes)
+                if full_text.strip():
+                    status   = "sucesso"
+                    error_msg = None
+            except Exception as exc:
+                error_msg = f"ocr_erro: {exc}"
+        else:
+            error_msg = f"pdf_escaneado|{ocr_status.message}"
 
     elif not is_pdf:
         # Texto puro

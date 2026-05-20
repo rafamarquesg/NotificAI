@@ -4,7 +4,36 @@ Sistema de apoio à notificação compulsória de violências e agravos à saúd
 
 > TCC do MBA em Data Science e Analytics — USP/ESALQ
 
-> **Código-fonte do sistema:** o código foi movido para o monorepo de projetos em [`rafamarquesg/Projetos`](https://github.com/rafamarquesg/Projetos), pasta [`NotificAI_Sistema/`](https://github.com/rafamarquesg/Projetos/tree/main/NotificAI_Sistema). Este repositório passa a abrigar apenas a monografia do TCC.
+Este repositório contém:
+
+- **Monografia revisada**: `[TCC Revisado] - Rafael Marques Geraldo (1).docx`
+- **Código de referência reprodutível do MBA** — pipeline lexical descrito na metodologia do TCC (até a etapa de regras de violência sexual, composição de sensibilidade Wilson score e extração de palavras-chave para a Tabela 2). O código institucional completo, com integração BERT/Streamlit e léxico completo de 1.500 termos, está em [`rafamarquesg/Projetos/NotificAI_Sistema`](https://github.com/rafamarquesg/Projetos/tree/main/NotificAI_Sistema).
+
+## Estrutura do código
+
+| Arquivo | Componente |
+|---|---|
+| `lexicon.py` | `ExpandedViolenceLexicon` — 8 categorias semânticas + pesos diferenciados, padrões críticos (armas, ameaças, violência sexual, gravidez, crianças) |
+| `extractor.py` | `EnhancedTextExtractor` — cascata PDFPlumber → PyMuPDF → Tesseract OCR |
+| `classifier.py` | `DocumentClassifier` — tipo de documento e metadados (data, autor, serviço) |
+| `identifier.py` | `EnhancedPatientIdentifier` — matrícula/CPF/nome com anonimização HIPAA Safe Harbor |
+| `analyzer.py` | `EnhancedViolenceAnalyzer` — matching regex, contexto ±200 chars, detecção de negação em janela de 5 palavras, fator de intensidade |
+| `scoring.py` | Classificação de severidade (CRÍTICO/ALTO/MODERADO/BAIXO/MÍNIMO) com ajuste de 30% para padrões críticos |
+| `sensitivity.py` | Composição de sensibilidade (explícita + expandida) com IC95% pelo método Wilson score |
+| `keyword_extraction.py` | Agregação de frequências para a Tabela 2 |
+| `pipeline.py` | Orquestração das 7 etapas |
+| `main.py` | CLI; produz `resumo_executivo.csv`, `deteccoes_consolidadas.csv` e `tabela2_palavras_chave.csv` |
+
+### Uso
+
+```bash
+pip install -r requirements.txt
+python main.py /caminho/para/pdfs --out ./saida
+```
+
+### Nota sobre o léxico
+
+A versão pública contém ~230 termos representativos cobrindo todas as 8 categorias. A versão institucional do NUVE/HCFMUSP utilizada para os resultados publicados contém 1.500 termos e pode ser disponibilizada mediante solicitação formal — o léxico institucional não é redistribuído publicamente porque inclui jargões e abreviações de uso interno da instituição.
 
 ---
 

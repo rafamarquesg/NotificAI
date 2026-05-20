@@ -4,6 +4,8 @@ Sistema de apoio à notificação compulsória de violências e agravos à saúd
 
 > TCC do MBA em Data Science e Analytics — USP/ESALQ
 
+> **Código-fonte do sistema:** o código foi movido para o monorepo de projetos em [`rafamarquesg/Projetos`](https://github.com/rafamarquesg/Projetos), pasta [`NotificAI_Sistema/`](https://github.com/rafamarquesg/Projetos/tree/main/NotificAI_Sistema). Este repositório passa a abrigar apenas a monografia do TCC.
+
 ---
 
 ## Resultados

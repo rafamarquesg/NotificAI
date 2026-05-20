@@ -1,163 +1,266 @@
-"""EnhancedViolenceAnalyzer — análise lexical com detecção de negação e contexto.
+"""EnhancedViolenceAnalyzer — análise lexical com contexto e padrões críticos.
 
-Implementação fiel à descrição na metodologia:
-  - Matching por expressões regulares compiladas
-  - Janela de contexto de 200 caracteres adjacentes
-  - Detecção de negação em janela de 5 palavras anteriores
-  - Score base: Σ(termo × peso_categoria × fator_intensidade × (1 - fator_negação))
+Implementa as etapas 4 a 6 do pipeline descrito na metodologia:
+  - Matching por regex compilado, contexto ±200 chars
+  - Detecção de negação (janela de ~80 chars / 5 palavras)
+  - Fator de intensidade contextual (frequência, gravidade, armas)
+  - Detecção de padrões críticos (chronic, sexual, weapons, etc.)
+  - Localização página/linha de cada detecção
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Optional
 
-from lexicon import (
-    CRITICAL_PATTERNS,
-    EVASION_MARKERS,
-    ExpandedViolenceLexicon,
-    NEGATION_TRIGGERS,
-)
+from config import PATTERN_BONUSES, ProcessingConfig
+from extractor import ExtractionResult, PageInfo
+from lexicon import (ExpandedViolenceLexicon, compile_negation_patterns,
+                     compile_term_patterns)
 
-CONTEXT_WINDOW = 200
-NEGATION_WINDOW_WORDS = 5
-INTENSITY_MARKERS = {
-    "grave": 1.3, "severo": 1.3, "extrema": 1.4, "múltiplas": 1.2,
-    "repetida": 1.25, "crônica": 1.3, "recorrente": 1.25, "intensa": 1.2,
-}
+
+_CONTEXT_HALF = 150
+_NEG_LOOKBACK = 150
+_SENTENCE_BOUNDARY = re.compile(r"[.!?\n]")
+_PAGE_MARKER_RE = re.compile(r"---\s*PÁGINA\s*(\d+)\s*---")
 
 
 @dataclass
 class Detection:
     term: str
     category: str
-    weight: float
-    position: int
+    base_weight: float
+    intensity: float
+    adjusted_weight: float
+    confidence: float
     context: str
-    negated: bool
-    intensity_factor: float
-    contribution: float
+    full_sentence: str
+    position_start: int
+    position_end: int
+    page_number: int
+    line_number: int
+    document_date: Optional[str] = None
 
 
 @dataclass
-class ContextualSignals:
-    medical_trauma_density: float = 0.0
-    evasion_count: int = 0
-    critical_pattern_hits: dict = field(default_factory=dict)
-    paragraphs: int = 0
+class ViolencePatterns:
+    chronic_violence: bool = False
+    escalation_pattern: bool = False
+    weapons_involved: bool = False
+    children_present: bool = False
+    pregnancy_violence: bool = False
+    sexual_violence: bool = False
+    death_threats: bool = False
+    multiple_injuries: bool = False
+    psychological_control: bool = False
+    economic_abuse: bool = False
+
+    def any_critical(self) -> bool:
+        return any((self.weapons_involved, self.death_threats,
+                    self.sexual_violence, self.pregnancy_violence))
+
+    def as_dict(self) -> dict:
+        return {
+            "chronic_violence": self.chronic_violence,
+            "escalation_pattern": self.escalation_pattern,
+            "weapons_involved": self.weapons_involved,
+            "children_present": self.children_present,
+            "pregnancy_violence": self.pregnancy_violence,
+            "sexual_violence": self.sexual_violence,
+            "death_threats": self.death_threats,
+            "multiple_injuries": self.multiple_injuries,
+            "psychological_control": self.psychological_control,
+            "economic_abuse": self.economic_abuse,
+        }
 
 
 @dataclass
 class AnalysisResult:
     detections: list[Detection]
-    contextual: ContextualSignals
+    patterns: ViolencePatterns
     base_score: float
     contextual_bonus: float
-    final_score: float
+    total_score: float
+    category_scores: dict[str, float] = field(default_factory=dict)
+    category_counts: dict[str, int] = field(default_factory=dict)
 
 
-def _compile_lexicon():
-    compiled = []
-    for term, category, weight in ExpandedViolenceLexicon.flat_terms():
-        pattern = re.compile(r"\b" + re.escape(term) + r"\b", re.IGNORECASE)
-        compiled.append((pattern, term, category, weight))
-    return compiled
+def _build_page_offsets(text: str, pages: list[PageInfo]) -> list[tuple[int, int, int]]:
+    """Constrói (start_offset, end_offset, page_number) por página no texto consolidado."""
+    if not pages:
+        return [(0, len(text), 1)]
+    offsets = []
+    matches = list(_PAGE_MARKER_RE.finditer(text))
+    if not matches:
+        return [(0, len(text), 1)]
+    for i, m in enumerate(matches):
+        page_no = int(m.group(1))
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        offsets.append((start, end, page_no))
+    return offsets
 
 
-def _is_negated(text: str, pos: int) -> bool:
-    prefix = text[max(0, pos - 80):pos].lower()
-    tokens = prefix.split()[-NEGATION_WINDOW_WORDS:]
-    window = " ".join(tokens)
-    return any(trigger in window for trigger in NEGATION_TRIGGERS)
+def _page_for_position(pos: int, offsets: list[tuple[int, int, int]]) -> int:
+    for start, end, page in offsets:
+        if start <= pos < end:
+            return page
+    return offsets[0][2] if offsets else 1
 
 
-def _intensity_factor(context: str) -> float:
-    lower = context.lower()
-    factor = 1.0
-    for marker, mult in INTENSITY_MARKERS.items():
-        if marker in lower:
-            factor = max(factor, mult)
-    return factor
+def _line_for_position(text: str, pos: int) -> int:
+    return text.count("\n", 0, pos) + 1
 
 
-def _context_slice(text: str, start: int, end: int) -> str:
-    a = max(0, start - CONTEXT_WINDOW)
-    b = min(len(text), end + CONTEXT_WINDOW)
-    return text[a:b].replace("\n", " ").strip()
-
-
-def _contextual_signals(text: str) -> ContextualSignals:
-    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
-    trauma_terms = ("fratura", "hematoma", "equimose", "lesão", "lesao", "trauma",
-                    "ferimento", "contusão", "contusao", "escoriação", "escoriacao")
-    densities = []
-    for p in paragraphs:
-        lower = p.lower()
-        n = sum(lower.count(t) for t in trauma_terms)
-        densities.append(n)
-    max_density = max(densities, default=0)
-
-    lower = text.lower()
-    evasion_count = sum(lower.count(m) for m in EVASION_MARKERS)
-
-    crit_hits = {}
-    for name, (_bonus, markers) in CRITICAL_PATTERNS.items():
-        n = sum(lower.count(m) for m in markers)
-        if n:
-            crit_hits[name] = n
-
-    return ContextualSignals(
-        medical_trauma_density=float(max_density),
-        evasion_count=evasion_count,
-        critical_pattern_hits=crit_hits,
-        paragraphs=len(paragraphs),
-    )
+def _extract_sentence(text: str, start: int, end: int, max_radius: int = 400) -> str:
+    left = max(0, start - max_radius)
+    right = min(len(text), end + max_radius)
+    pre = text[left:start]
+    post = text[end:right]
+    pre_boundary = max((pre.rfind(c) for c in ".!?\n"), default=-1)
+    sentence_start = left + (pre_boundary + 1 if pre_boundary >= 0 else 0)
+    post_match = _SENTENCE_BOUNDARY.search(post)
+    sentence_end = end + (post_match.end() if post_match else len(post))
+    return text[sentence_start:sentence_end].strip()
 
 
 class EnhancedViolenceAnalyzer:
-    def __init__(self):
-        self._compiled = _compile_lexicon()
+    def __init__(self, config: ProcessingConfig | None = None):
+        self.config = config or ProcessingConfig()
+        self._terms = compile_term_patterns()
+        self._negations = compile_negation_patterns()
 
-    def analyze(self, text: str) -> AnalysisResult:
-        detections: list[Detection] = []
-        seen_positions = set()
+    # -- API ----------------------------------------------------------------
 
-        for pattern, term, category, weight in self._compiled:
-            for m in pattern.finditer(text):
-                pos = m.start()
-                key = (term.lower(), pos)
-                if key in seen_positions:
-                    continue
-                seen_positions.add(key)
-                ctx = _context_slice(text, pos, m.end())
-                negated = _is_negated(text, pos)
-                intensity = _intensity_factor(ctx)
-                contribution = 0.0 if negated else weight * intensity
-                detections.append(Detection(
-                    term=term, category=category, weight=weight, position=pos,
-                    context=ctx, negated=negated, intensity_factor=intensity,
-                    contribution=round(contribution, 3),
-                ))
+    def analyze(self, extraction: ExtractionResult,
+                document_date: Optional[str] = None) -> AnalysisResult:
+        text = extraction.text
+        offsets = _build_page_offsets(text, extraction.pages)
 
-        base_score = round(sum(d.contribution for d in detections), 3)
-        contextual = _contextual_signals(text)
-        contextual_bonus = self._compute_context_bonus(contextual, base_score)
+        detections = self._scan_terms(text, offsets, document_date)
+        detections = self._dedup_overlapping(detections)
+        patterns = self._detect_patterns(text)
+
+        base_score = 0.0
+        cat_score: dict[str, float] = {}
+        cat_count: dict[str, int] = {}
+        for d in detections:
+            contrib = d.adjusted_weight * d.confidence
+            base_score += contrib
+            cat_score[d.category] = cat_score.get(d.category, 0.0) + contrib
+            cat_count[d.category] = cat_count.get(d.category, 0) + 1
+
+        bonus = self._pattern_bonus(patterns)
+        total = base_score + bonus
+
         return AnalysisResult(
             detections=detections,
-            contextual=contextual,
-            base_score=base_score,
-            contextual_bonus=round(contextual_bonus, 3),
-            final_score=round(base_score + contextual_bonus, 3),
+            patterns=patterns,
+            base_score=round(base_score, 3),
+            contextual_bonus=round(bonus, 3),
+            total_score=round(total, 3),
+            category_scores={k: round(v, 3) for k, v in cat_score.items()},
+            category_counts=cat_count,
         )
 
+    # -- Internal -----------------------------------------------------------
+
+    def _scan_terms(self, text: str, offsets, document_date: Optional[str]) -> list[Detection]:
+        detections: list[Detection] = []
+        for pattern, term, category, weight in self._terms:
+            for m in pattern.finditer(text):
+                start, end = m.start(), m.end()
+                if self._is_negated(text, start, end):
+                    continue
+                ctx = text[max(0, start - _CONTEXT_HALF): min(len(text), end + _CONTEXT_HALF)]
+                ctx = re.sub(r"\s+", " ", ctx).strip()
+                intensity = self._contextual_intensity(text, start, end)
+                adjusted = weight * intensity
+                confidence = self._confidence(ctx)
+                detections.append(Detection(
+                    term=term, category=category, base_weight=weight,
+                    intensity=intensity, adjusted_weight=adjusted,
+                    confidence=confidence, context=ctx,
+                    full_sentence=_extract_sentence(text, start, end),
+                    position_start=start, position_end=end,
+                    page_number=_page_for_position(start, offsets),
+                    line_number=_line_for_position(text, start),
+                    document_date=document_date,
+                ))
+        return detections
+
+    def _is_negated(self, text: str, start: int, end: int) -> bool:
+        scope = text[max(0, start - _NEG_LOOKBACK): end]
+        return any(rx.search(scope) for rx in self._negations)
+
     @staticmethod
-    def _compute_context_bonus(signals: ContextualSignals, base_score: float) -> float:
+    def _contextual_intensity(text: str, start: int, end: int) -> float:
+        ctx = text[max(0, start - 200): min(len(text), end + 200)].lower()
+        factor = 1.0
+        for w in ExpandedViolenceLexicon.CRITICAL_KEYWORDS["chronic"]:
+            if w in ctx:
+                factor += 0.3
+                break
+        severity = ("hospital", "sangue", "fratura", "ambulância", "emergência",
+                    "uti", "cirurgia", "sutura", "pontos", "internação")
+        if any(s in ctx for s in severity):
+            factor += 0.7
+        if any(w in ctx for w in ExpandedViolenceLexicon.CRITICAL_KEYWORDS["weapons"]):
+            factor += 0.6
+        return max(0.1, min(5.0, factor))
+
+    @staticmethod
+    def _confidence(context: str) -> float:
+        confidence = 1.0
+        if len(context) < 30:
+            confidence *= 0.8
+        elif len(context) > 100:
+            confidence *= 1.1
+        medical = ("paciente", "diagnóstico", "exame", "relata",
+                   "apresenta", "refere", "história")
+        low = context.lower()
+        med_count = sum(1 for m in medical if m in low)
+        confidence *= (1 + med_count * 0.1)
+        return max(0.1, min(2.0, confidence))
+
+    @staticmethod
+    def _dedup_overlapping(detections: list[Detection]) -> list[Detection]:
+        ordered = sorted(detections, key=lambda d: d.position_start)
+        kept: list[Detection] = []
+        for d in ordered:
+            overlap = next((k for k in kept
+                            if d.position_start <= k.position_end
+                            and d.position_end >= k.position_start), None)
+            if overlap is None:
+                kept.append(d)
+            elif d.adjusted_weight > overlap.adjusted_weight:
+                kept.remove(overlap)
+                kept.append(d)
+        return sorted(kept, key=lambda d: d.adjusted_weight * d.confidence, reverse=True)
+
+    @staticmethod
+    def _detect_patterns(text: str) -> ViolencePatterns:
+        low = text.lower()
+        kw = ExpandedViolenceLexicon.CRITICAL_KEYWORDS
+        p = ViolencePatterns()
+        p.chronic_violence = any(w in low for w in kw["chronic"])
+        p.escalation_pattern = any(w in low for w in kw["escalation"])
+        p.weapons_involved = any(w in low for w in kw["weapons"])
+        p.children_present = any(w in low for w in kw["children_present"])
+        p.pregnancy_violence = any(w in low for w in kw["pregnancy"])
+        p.sexual_violence = any(w in low for w in kw["sexual"])
+        p.death_threats = any(w in low for w in kw["death_threats"])
+        p.psychological_control = any(w in low for w in kw["psychological_control"])
+        p.economic_abuse = any(w in low for w in kw["economic_abuse"])
+        injury_count = sum(low.count(t) for t in ExpandedViolenceLexicon.INJURY_TERMS)
+        p.multiple_injuries = injury_count > 3
+        return p
+
+    @staticmethod
+    def _pattern_bonus(p: ViolencePatterns) -> float:
         bonus = 0.0
-        for pattern_name, count in signals.critical_pattern_hits.items():
-            inc, _ = CRITICAL_PATTERNS[pattern_name]
-            bonus += inc * min(count, 2)
-        if base_score < 3.0 and signals.medical_trauma_density > 3:
-            bonus += min(5.0, signals.medical_trauma_density - 3.0)
-        if signals.evasion_count > 0:
-            bonus += min(2.0, signals.evasion_count * 0.5)
+        for key, value in p.as_dict().items():
+            if value and key in PATTERN_BONUSES:
+                bonus += PATTERN_BONUSES[key]
         return bonus

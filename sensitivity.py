@@ -1,9 +1,10 @@
 """Composição de sensibilidade — IC95% pelo método Wilson score.
 
-Conforme metodologia: sensibilidade = TP / (TP + FN), com IC95% pelo
-método Wilson score (apropriado para proporções, especialmente quando
-próximas de 0 ou 1). Reproduz exatamente o cálculo reportado no TCC:
-129/152 = 84,9% (IC95% 78,4%–89,8%).
+Conforme a metodologia do TCC, a sensibilidade é calculada apenas sobre
+casos positivos confirmados (TP/(TP+FN)) e reportada com IC95% pelo
+método Wilson score — apropriado para proporções próximas dos extremos.
+
+Reproduz o resultado publicado: 129/152 = 84,9% (IC95% 78,4–89,8%).
 """
 
 from __future__ import annotations
@@ -33,28 +34,26 @@ def wilson_score_interval(successes: int, n: int, z: float = Z_95) -> tuple[floa
     return max(0.0, centre - half), min(1.0, centre + half)
 
 
-def composite_sensitivity(detected: int, total_positive: int,
-                          contextual_high_risk: int = 0) -> dict:
-    """Composição em dois níveis, alinhada à seção 'Sensibilidade expandida'.
+def composite_sensitivity(detected_explicit: int, total_positive: int,
+                          contextual_high_risk: int = 0) -> dict[str, SensitivityResult]:
+    """Composição em dois níveis (seção 'Sensibilidade expandida' do TCC).
 
-    - sensibilidade_explicita: detecções por matching lexical direto
-    - sensibilidade_expandida: explícita + score contextual de alto risco
+    - explicita: detecções por matching lexical direto (84,9% no estudo)
+    - expandida: explícita + score contextual de alto risco (100% no estudo)
     """
-    explicit_lo, explicit_hi = wilson_score_interval(detected, total_positive)
+    lo, hi = wilson_score_interval(detected_explicit, total_positive)
     explicit = SensitivityResult(
-        sensitivity=detected / total_positive if total_positive else 0.0,
-        ci_lower=explicit_lo, ci_upper=explicit_hi,
-        detected=detected, total=total_positive,
+        sensitivity=(detected_explicit / total_positive) if total_positive else 0.0,
+        ci_lower=lo, ci_upper=hi,
+        detected=detected_explicit, total=total_positive,
     )
-
-    expanded_n = detected + contextual_high_risk
-    exp_lo, exp_hi = wilson_score_interval(expanded_n, total_positive)
+    expanded_n = detected_explicit + contextual_high_risk
+    lo2, hi2 = wilson_score_interval(expanded_n, total_positive)
     expanded = SensitivityResult(
-        sensitivity=expanded_n / total_positive if total_positive else 0.0,
-        ci_lower=exp_lo, ci_upper=exp_hi,
+        sensitivity=(expanded_n / total_positive) if total_positive else 0.0,
+        ci_lower=lo2, ci_upper=hi2,
         detected=expanded_n, total=total_positive,
     )
-
     return {"explicita": explicit, "expandida": expanded}
 
 

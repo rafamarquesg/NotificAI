@@ -1,52 +1,42 @@
-"""DocumentClassifier — identifica tipo de documento e extrai metadados."""
+"""DocumentClassifier — classifica o tipo de documento médico."""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 
-DOC_PATTERNS = {
-    "evolucao_medica": (r"evolução médica|evolucao medica|evolução clínica", 1.0),
-    "anotacoes_enfermagem": (r"anotações de enfermagem|anotacoes de enfermagem|evolução de enfermagem", 1.0),
-    "servico_social": (r"serviço social|servico social|relatório social", 1.0),
-    "relatorio_multiprofissional": (r"relatório multiprofissional|multiprofissional", 0.9),
-    "laudo": (r"laudo|exame complementar", 0.7),
-    "encaminhamento": (r"encaminhamento|referência", 0.6),
+from config import DocumentType
+
+_PATTERNS = {
+    DocumentType.EVOLUCAO_MEDICA: [
+        r"evolução\s+médica", r"evolução\s+clínica", r"evolução\s+do\s+paciente",
+        r"prescrição\s+médica", r"exame\s+físico", r"conduta\s+médica",
+        r"diagnóstico\s+médico", r"avaliação\s+médica", r"médico\s+assistente",
+        r"\bdr\.?\b", r"\bdra\.?\b", r"\bcrm\b", r"clínica\s+médica",
+    ],
+    DocumentType.ANOTACOES_ENFERMAGEM: [
+        r"anotações?\s+(?:de\s+)?enfermagem", r"evolução\s+(?:de\s+)?enfermagem",
+        r"cuidados?\s+(?:de\s+)?enfermagem", r"técnico\s+(?:de\s+)?enfermagem",
+        r"enfermeiro\s+responsável", r"procedimento\s+(?:de\s+)?enfermagem",
+        r"sinais\s+vitais", r"balanço\s+hídrico", r"\bcoren\b",
+        r"auxiliar\s+de\s+enfermagem",
+    ],
+    DocumentType.MULTIPROFISSIONAL: [
+        r"(?:equipe\s+)?multiprofissional", r"serviço\s+social",
+        r"psicologia", r"fisioterapia", r"nutrição",
+        r"terapia\s+ocupacional", r"fonoaudiologia",
+        r"assistente\s+social", r"psicólogo", r"fisioterapeuta",
+        r"nutricionista", r"terapeuta\s+ocupacional", r"fonoaudiólogo",
+    ],
 }
 
-DATE_RE = re.compile(r"\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})\b")
-AUTHOR_RE = re.compile(r"(?:dr\.?|dra\.?|enf\.?|assist\.?\s*social)\s+([A-ZÁ-Úa-zá-ú\s]+)", re.IGNORECASE)
-SERVICE_RE = re.compile(r"(?:serviço|servico|unidade|setor)\s*[:\-]?\s*([A-ZÁ-Ú][A-Za-zá-ú\s]+)", re.IGNORECASE)
-
-
-@dataclass
-class DocumentMeta:
-    doc_type: str
-    confidence: float
-    dates: list[str] = field(default_factory=list)
-    author: str | None = None
-    service: str | None = None
+_COMPILED = {dt: [re.compile(p, re.IGNORECASE) for p in pats]
+             for dt, pats in _PATTERNS.items()}
 
 
 class DocumentClassifier:
-    def classify(self, text: str) -> DocumentMeta:
-        lower = text.lower()
-        best_type, best_conf = "indefinido", 0.0
-        for name, (pattern, weight) in DOC_PATTERNS.items():
-            hits = len(re.findall(pattern, lower))
-            if hits == 0:
-                continue
-            conf = min(1.0, hits * weight * 0.4)
-            if conf > best_conf:
-                best_type, best_conf = name, conf
-
-        dates = [f"{d}/{m}/{y}" for d, m, y in DATE_RE.findall(text)]
-        author_match = AUTHOR_RE.search(text)
-        service_match = SERVICE_RE.search(text)
-        return DocumentMeta(
-            doc_type=best_type,
-            confidence=round(best_conf, 3),
-            dates=dates[:10],
-            author=author_match.group(1).strip() if author_match else None,
-            service=service_match.group(1).strip() if service_match else None,
-        )
+    def classify(self, text: str) -> DocumentType:
+        sample = text[:2000].lower()
+        scores = {dt: sum(len(rx.findall(sample)) for rx in rxs)
+                  for dt, rxs in _COMPILED.items()}
+        best = max(scores, key=scores.get)
+        return best if scores[best] > 0 else DocumentType.OUTROS

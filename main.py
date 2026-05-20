@@ -1,80 +1,85 @@
-"""CLI — processa lote de PDFs e gera resumo_executivo.csv e deteccoes_consolidadas.csv.
+"""CLI: processa pasta de PDFs e gera relatórios.
 
 Uso:
     python main.py <pasta_com_pdfs> [--out diretorio_saida]
+                                    [--positivos N] [--no-anonymize]
+
+`--positivos N` ativa o cálculo de sensibilidade Wilson score (composta:
+explícita + expandida) assumindo que todos os PDFs da pasta são casos
+positivos confirmados — reproduz a validação descrita no TCC.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 from pathlib import Path
 
+from config import ProcessingConfig, SeverityLevel
+from exporter import export_all
 from keyword_extraction import aggregate_keywords, to_csv_rows
-from pipeline import TriagePipeline, case_summary_row, detection_rows
+from pipeline import TriagePipeline
 from sensitivity import composite_sensitivity, format_pct
-
-
-def _write_csv(path: Path, rows: list[dict]) -> None:
-    if not rows:
-        path.write_text("", encoding="utf-8")
-        return
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def run(input_dir: Path, output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    pdfs = sorted(input_dir.glob("*.pdf"))
-    if not pdfs:
-        print(f"Nenhum PDF em {input_dir}")
-        return
-
-    pipeline = TriagePipeline()
-    summary_rows: list[dict] = []
-    detection_rows_all: list[dict] = []
-    analyses = []
-    explicit_detected = 0
-    contextual_high_risk = 0
-
-    for pdf in pdfs:
-        report = pipeline.process(pdf)
-        summary_rows.append(case_summary_row(report))
-        detection_rows_all.extend(detection_rows(report))
-        analyses.append(report.analysis)
-        explicit_has_term = any(not d.negated for d in report.analysis.detections)
-        if explicit_has_term:
-            explicit_detected += 1
-        elif report.severity.label in ("ALTO", "CRITICO"):
-            contextual_high_risk += 1
-
-    _write_csv(output_dir / "resumo_executivo.csv", summary_rows)
-    _write_csv(output_dir / "deteccoes_consolidadas.csv", detection_rows_all)
-
-    keywords = aggregate_keywords(analyses, top_k=20)
-    _write_csv(output_dir / "tabela2_palavras_chave.csv", to_csv_rows(keywords))
-
-    total = len(pdfs)
-    sens = composite_sensitivity(explicit_detected, total, contextual_high_risk)
-    print(f"Processados: {total}")
-    print(f"Detectados explicitamente: {explicit_detected}")
-    print(f"Contextuais (alto risco): {contextual_high_risk}")
-    e = sens["explicita"]
-    x = sens["expandida"]
-    print(f"Sensibilidade explícita: {format_pct(e.sensitivity)} "
-          f"(IC95% {format_pct(e.ci_lower)}–{format_pct(e.ci_upper)})")
-    print(f"Sensibilidade expandida: {format_pct(x.sensitivity)} "
-          f"(IC95% {format_pct(x.ci_lower)}–{format_pct(x.ci_upper)})")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="NotificAI — triagem lexical de violência em prontuários")
-    parser.add_argument("input_dir", type=Path, help="Diretório com PDFs de prontuários")
-    parser.add_argument("--out", type=Path, default=Path("./saida"), help="Diretório de saída")
+    parser.add_argument("input_dir", type=Path, help="Diretório com PDFs")
+    parser.add_argument("--out", type=Path, default=Path("./saida"))
+    parser.add_argument("--positivos", type=int, default=None,
+                        help="Se informado, reporta sensibilidade explícita+expandida (IC95% Wilson)")
+    parser.add_argument("--no-anonymize", action="store_true",
+                        help="Desativa anonimização (uso restrito; padrão: anonimizado)")
     args = parser.parse_args()
-    run(args.input_dir, args.out)
+
+    pdfs = sorted(args.input_dir.glob("*.pdf"))
+    if not pdfs:
+        print(f"Nenhum PDF em {args.input_dir}")
+        return
+
+    config = ProcessingConfig(anonymize_identifiers=not args.no_anonymize)
+    pipeline = TriagePipeline(config)
+
+    print(f"Processando {len(pdfs)} PDF(s)...")
+    reports = []
+    for i, pdf in enumerate(pdfs, start=1):
+        r = pipeline.process(pdf)
+        if r.severity:
+            print(f"  [{i}/{len(pdfs)}] {pdf.name}: {r.severity.label} (score={r.severity.score})")
+        else:
+            print(f"  [{i}/{len(pdfs)}] {pdf.name}: ERRO ({r.error_message})")
+        reports.append(r)
+
+    paths = export_all(reports, args.out)
+    print(f"\nResumo executivo:        {paths['executive']}")
+    print(f"Detecções consolidadas:  {paths['consolidated']}")
+    print(f"Análise completa (JSON): {paths['json']}")
+    print(f"Relatório estatístico:   {paths['stats']}")
+
+    success = [r for r in reports if r.analysis]
+    keywords = aggregate_keywords([r.analysis for r in success], top_k=20)
+    kw_path = args.out / "tabela2_palavras_chave.csv"
+    import csv as _csv
+    with kw_path.open("w", encoding="utf-8-sig", newline="") as f:
+        w = _csv.DictWriter(f, fieldnames=["termo", "frequencia_absoluta",
+                                            "frequencia_relativa_pct", "categoria"])
+        w.writeheader()
+        w.writerows(to_csv_rows(keywords))
+    print(f"Tabela 2 (palavras-chave): {kw_path}")
+
+    n_positives = args.positivos if args.positivos is not None else None
+    if n_positives:
+        explicit = sum(1 for r in success
+                       if r.analysis and any(not False for d in r.analysis.detections))
+        contextual = sum(1 for r in success
+                         if r.severity and r.severity.label in (SeverityLevel.HIGH.value,
+                                                                 SeverityLevel.CRITICAL.value)
+                         and not (r.analysis and r.analysis.detections))
+        sens = composite_sensitivity(explicit, n_positives, contextual)
+        print("\nSensibilidade (Wilson IC95%):")
+        for name, res in sens.items():
+            print(f"  {name}: {format_pct(res.sensitivity)} "
+                  f"({format_pct(res.ci_lower)}–{format_pct(res.ci_upper)}) "
+                  f"[{res.detected}/{res.total}]")
 
 
 if __name__ == "__main__":

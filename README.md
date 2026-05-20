@@ -3,245 +3,177 @@
 Sistema de apoio à notificação compulsória de violências e agravos à saúde em prontuários eletrônicos, desenvolvido para o **Núcleo de Vigilância Epidemiológica (NUVE)** do Hospital das Clínicas da FMUSP.
 
 > TCC do MBA em Data Science e Analytics — USP/ESALQ
+> Rafael Marques Geraldo · 2024
 
 Este repositório contém:
 
 - **Monografia revisada**: `[TCC Revisado] - Rafael Marques Geraldo (1).docx`
-- **Código de referência reprodutível do MBA** — pipeline lexical descrito na metodologia do TCC (até a etapa de regras de violência sexual, composição de sensibilidade Wilson score e extração de palavras-chave para a Tabela 2). O código institucional completo, com integração BERT/Streamlit e léxico completo de 1.500 termos, está em [`rafamarquesg/Projetos/NotificAI_Sistema`](https://github.com/rafamarquesg/Projetos/tree/main/NotificAI_Sistema).
+- **Código-fonte de referência** — pipeline lexical descrito na metodologia do TCC, refatorado para uso reprodutível fora do Google Colab.
 
-## Estrutura do código
+O código institucional completo (integração BERT/Streamlit, léxico fechado de 1.500 termos, painéis com workflow e exportação SINAN) vive em [`rafamarquesg/Projetos/NotificAI_Sistema`](https://github.com/rafamarquesg/Projetos/tree/main/NotificAI_Sistema). Este repositório mantém a versão limpa, modular e auditável que acompanha o TCC.
 
-| Arquivo | Componente |
+---
+
+## Resultados publicados (TCC)
+
+| Métrica | Valor |
 |---|---|
-| `lexicon.py` | `ExpandedViolenceLexicon` — 8 categorias semânticas + pesos diferenciados, padrões críticos (armas, ameaças, violência sexual, gravidez, crianças) |
-| `extractor.py` | `EnhancedTextExtractor` — cascata PDFPlumber → PyMuPDF → Tesseract OCR |
-| `classifier.py` | `DocumentClassifier` — tipo de documento e metadados (data, autor, serviço) |
-| `identifier.py` | `EnhancedPatientIdentifier` — matrícula/CPF/nome com anonimização HIPAA Safe Harbor |
-| `analyzer.py` | `EnhancedViolenceAnalyzer` — matching regex, contexto ±200 chars, detecção de negação em janela de 5 palavras, fator de intensidade |
-| `scoring.py` | Classificação de severidade (CRÍTICO/ALTO/MODERADO/BAIXO/MÍNIMO) com ajuste de 30% para padrões críticos |
-| `sensitivity.py` | Composição de sensibilidade (explícita + expandida) com IC95% pelo método Wilson score |
-| `keyword_extraction.py` | Agregação de frequências para a Tabela 2 |
-| `pipeline.py` | Orquestração das 7 etapas |
-| `main.py` | CLI; produz `resumo_executivo.csv`, `deteccoes_consolidadas.csv` e `tabela2_palavras_chave.csv` |
+| Sensibilidade explícita | 84,9% (IC 95% 78,4–89,8%, Wilson score) |
+| Sensibilidade expandida (com score contextual) | 100% |
+| Precisão entre detectados (validação humana) | 100% |
+| Tempo médio de processamento | 3,7 s/prontuário |
+| Redução vs. revisão manual (13 min) | 99,5% |
+| Amostra | 152 pacientes únicos / 170 documentos |
 
-### Uso
+---
+
+## Arquitetura
+
+Pipeline de sete etapas conforme Materiais e Métodos da monografia:
+
+```
+PDF ─► extractor ─► metadata ─► identifier ─► analyzer ─► scoring ─► exporter ─► CSV/JSON
+       (cascata)    (datas,     (HIPAA       (regex +    (severidade)
+                     autor,      Safe Harbor) negação +
+                     serviço)                 padrões)
+```
+
+| Módulo | Responsabilidade |
+|---|---|
+| `config.py` | `ProcessingConfig`, enums (`SeverityLevel`, `DocumentType`, `QualityLevel`), limiares e bônus de padrões críticos |
+| `lexicon.py` | `ExpandedViolenceLexicon` — 8 categorias semânticas (Tabela 1 do TCC) com pesos diferenciados (2,8 a 1,5); 529 termos públicos cobrindo todas as categorias, incluindo violência sexual; padrões críticos (armas, ameaças de morte, gravidez, crianças presentes, controle psicológico, abuso econômico) |
+| `extractor.py` | `EnhancedTextExtractor` — cascata **PDFPlumber → PyMuPDF → Tesseract OCR** com extração por página (`PageInfo`) para permitir localização das detecções |
+| `classifier.py` | `DocumentClassifier` — Evolução Médica / Anotações de Enfermagem / Multiprofissional / Outros |
+| `metadata.py` | `DocumentMetadataExtractor` — extração de data do documento (com validação de range médico 1980–2030), autor, serviço |
+| `identifier.py` | `EnhancedPatientIdentifier` — RGHC (íntegro), CPF (3+***+3), nome (íntegro para contexto clínico), data de nascimento, pseudônimo `PAC_XXXX` via SHA-256 com salt |
+| `analyzer.py` | `EnhancedViolenceAnalyzer` — matching regex pré-compilado, contexto ±150 chars, detecção de negação (janela ~80 chars), fator de intensidade contextual, deduplicação de sobreposições, localização página/linha de cada detecção, detecção dos 10 padrões críticos descritos no TCC |
+| `scoring.py` | Classificação de severidade **CRÍTICO ≥10 / ALTO ≥6 / MODERADO ≥3 / BAIXO ≥1 / MÍNIMO**, com **ajuste de 30%** dos limiares quando padrões críticos (armas, ameaças de morte, sexual, gravidez) estão presentes |
+| `sensitivity.py` | Cálculo Wilson score de IC95% — composição **explícita + expandida** (reproduz 129/152 = 84,9% IC95% 78,3–89,7%) |
+| `keyword_extraction.py` | Agregação para a **Tabela 2** do TCC — frequência absoluta e relativa por categoria, top-K |
+| `pipeline.py` | `TriagePipeline` — orquestra as 7 etapas, retorna `CaseReport` com tudo |
+| `exporter.py` | Gera os quatro artefatos descritos na metodologia |
+| `main.py` | CLI |
+
+---
+
+## Uso
 
 ```bash
 pip install -r requirements.txt
 python main.py /caminho/para/pdfs --out ./saida
 ```
 
-### Nota sobre o léxico
+Para reproduzir o cálculo de sensibilidade do TCC (assumindo que todos os PDFs da pasta são casos positivos confirmados):
 
-A versão pública contém ~230 termos representativos cobrindo todas as 8 categorias. A versão institucional do NUVE/HCFMUSP utilizada para os resultados publicados contém 1.500 termos e pode ser disponibilizada mediante solicitação formal — o léxico institucional não é redistribuído publicamente porque inclui jargões e abreviações de uso interno da instituição.
+```bash
+python main.py /caminho/para/pdfs --out ./saida --positivos 152
+```
 
----
+### Artefatos gerados em `--out`
 
-## Resultados
-
-| Métrica | Valor |
+| Arquivo | Descrição |
 |---|---|
-| Sensibilidade | 84,9% (IC 95%: 79,2–90,6%) |
-| Tempo de processamento | ~3,7 s/prontuário |
-| Redução de tempo vs. revisão manual | 99,5% |
+| `resumo_executivo.csv` | Uma linha por documento, com identificação, metadados, scores, severidade, padrões críticos detectados |
+| `deteccoes_consolidadas.csv` | Uma linha por documento; coluna `termos_detectados` no formato `"termo (pág.X-linhaY-DD/MM/AAAA)"` |
+| `analise_completa.json` | Estrutura completa com todas as detecções, contextos, sentenças, padrões |
+| `relatorio_estatistico.txt` | Sumário agregado: distribuição por severidade, tipo de documento, padrões |
+| `tabela2_palavras_chave.csv` | Reproduz a Tabela 2 do TCC |
 
 ---
 
-## Funcionalidades
+## Anonimização (HIPAA Safe Harbor)
 
-- **Detecção lexical** de termos de violência com suporte a negação, contexto e deduplicação
-- **Classificação automática** em 7 tipos SINAN: Física, Sexual, Psicológica, Autoprovocada, Negligência, Trabalho Infantil, Tráfico de Pessoas
-- **NER clínico** via BioBERTpt (`pucpr/clinicalnerpt-disease`, `clinicalnerpt-medical`)
-- **Embeddings BERT** com BioBERTpt (`pucpr/biobertpt-clin`) e BERTimbau (`neuralmind/bert-base-portuguese-cased`)
-- **Exportação SINAN** — CSV e Excel no layout da Ficha de Notificação de Violência (SINAN NET v2019)
-- **Dashboard Streamlit** com dois painéis:
-  - **Painel Público** — métricas agregadas e anônimas
-  - **Painel Seguro** — dados sensíveis com autenticação, fila de prioridade e timeline de reincidência
-- **Monitoramento de pasta** — integração futura com diretório de prontuários da TI (watchdog)
-- **Workflow de casos** — pendente → em análise → notificado → arquivado
-- **Aprendizado ativo** — feedback de classificação para treino futuro com dados rotulados
+Política exatamente como descrita na seção 3.4 da metodologia:
+
+| Campo | Tratamento |
+|---|---|
+| RGHC | **Íntegro** (chave institucional para auditoria do NUVE) |
+| CPF | Parcial: `123***456` |
+| Nome | Íntegro (preservado para contexto clínico, uso restrito) |
+| Data de nascimento | Íntegra |
+| Pseudônimo | `PAC_XXXXXXXXXXXX` (SHA-256 com salt institucional) |
+
+Pode ser totalmente desativada via `--no-anonymize` (uso interno apenas).
 
 ---
 
-## Arquitetura
+## Léxico
 
-```
-NotificAI/
-├── detector.py          ← Detecção lexical (regex + negação + contexto)
-├── lexicon.py           ← Léxico hierárquico (8 categorias, pesos)
-├── features.py          ← Extração de ~35 características + embeddings BERT
-├── classifier.py        ← Classificador (regras → ML quando houver dados)
-├── notification_types.py← Enum de tipos SINAN
-├── pipeline.py          ← Orquestrador: texto → análise completa
-├── embedder.py          ← BertEmbedder (BioBERTpt / BERTimbau)
-├── ner.py               ← ClinicalNER (pucpr/clinicalnerpt-*)
-├── complete.py          ← Pré-processamento de PDF e texto
-├── models.py            ← Modelos de dados (dataclasses)
-├── utils.py             ← Utilitários (hash, limpeza)
-├── requirements.txt     ← Dependências base
-├── pytest.ini
-├── test_detector.py
-├── test_ml.py
-└── frontend/
-    ├── app.py                       ← Ponto de entrada: streamlit run frontend/app.py
-    ├── requirements_frontend.txt
-    ├── .streamlit/config.toml
-    ├── core/
-    │   ├── database.py              ← SQLite: schema, queries, workflow
-    │   ├── anonymizer.py            ← Pseudonimização + extração de IDs
-    │   ├── processor.py             ← PDF → análise → banco
-    │   ├── watcher.py               ← Watchdog para monitoramento de pasta
-    │   └── export.py                ← CSV/Excel no layout SINAN
-    ├── components/
-    │   ├── charts.py                ← Gráficos Plotly
-    │   ├── upload_widget.py         ← Upload e config de pasta
-    │   ├── priority_queue.py        ← Fila de casos por score
-    │   ├── timeline_viewer.py       ← Timeline de reincidência
-    │   └── record_viewer.py         ← Card de detalhe com feedback
-    └── panels/
-        ├── painel_publico.py        ← Dashboard anônimo
-        └── painel_seguro.py         ← Dashboard autenticado (dados sensíveis)
-```
+A versão pública contém **529 termos** distribuídos pelas 8 categorias da Tabela 1, suficientes para reproduzir o pipeline e cobrir todos os padrões críticos descritos no TCC:
 
-### Três níveis de operação
-
-| Nível | Requisitos | Descrição |
+| Categoria | Peso | Termos |
 |---|---|---|
-| 1 — Lexical | Nenhum (só Python stdlib + scikit-learn) | Regras + ~35 características |
-| 2 — + NER clínico | `transformers` | Entidades UMLS (doenças, achados) |
-| 3 — + BERT | `transformers` + `torch` | Mean-pooling BioBERTpt (~803 dims) |
+| Termos médicos formais | 2,8 | 118 |
+| Violência infantil | 2,7 | 16 |
+| Terminologia legal/policial | 2,5 | 74 |
+| Violência doméstica / Maria da Penha | 2,3 | 84 |
+| Contextos de enfermagem | 2,0 | 70 |
+| Abuso psicológico | 1,9 | 24 |
+| Linguagem coloquial | 1,8 | 95 |
+| Variações ortográficas | 1,5 | 48 |
+
+Curadoria removeu três falsos positivos identificados durante validação: `pau` (confusão com "São Paulo"), `machado` (sobrenome comum) e `DEAM` (sigla de delegacia, não-violência por si só).
+
+A versão institucional completa contém 1.500 termos (inclui jargões internos do HC-FMUSP) e pode ser disponibilizada mediante solicitação formal ao NUVE.
 
 ---
 
-## Instalação
+## Padrões críticos detectados (Análise contextual)
 
-### 1. Clonar e instalar dependências base
+10 padrões com bônus de score conforme metodologia:
 
-```bash
-git clone https://github.com/rafamarquesg/NotificAI.git
-cd NotificAI
-pip install -r requirements.txt
-```
-
-### 2. Dependências opcionais (BERT / NER clínico)
-
-```bash
-# CPU
-pip install torch transformers
-
-# GPU (CUDA 11.8)
-pip install torch --index-url https://download.pytorch.org/whl/cu118
-pip install transformers
-```
-
-### 3. Frontend Streamlit
-
-```bash
-pip install -r frontend/requirements_frontend.txt
-streamlit run frontend/app.py
-```
-
----
-
-## Uso rápido
-
-### Análise de texto
-
-```python
-from pipeline import AnalysisPipeline
-
-pipeline = AnalysisPipeline()
-result = pipeline.analyze_text(
-    "Paciente relata que o companheiro a agrediu com socos no rosto. "
-    "Apresenta hematoma periorbital bilateral."
-)
-print(pipeline.summary(result))
-# Tipo de notificação : Violência Física
-# Confiança           : 78.3%
-# Pontuação total     : 9.40
-# Modo                : RULES
-# Termos detectados   : 4 (0 negados)
-# Tempo               : 12.1 ms
-```
-
-### Classificação com BERT (quando disponível)
-
-```python
-from embedder import BertEmbedder
-from features import FeatureExtractor
-from pipeline import AnalysisPipeline
-
-embedder = BertEmbedder("pucpr/biobertpt-clin")
-extractor = FeatureExtractor(embedder=embedder)
-pipeline = AnalysisPipeline(extractor=extractor)
-
-result = pipeline.analyze_text(texto)
-```
-
-### Treinar com dados rotulados
-
-```python
-from notification_types import NotificationType
-
-labels = [NotificationType.VIOLENCIA_FISICA, NotificationType.VIOLENCIA_SEXUAL, ...]
-pipeline.classifier.fit(textos, labels)
-pipeline.classifier.save("modelo_nuve.pkl")
-
-# Inferência posterior
-pipeline = AnalysisPipeline(model_path="modelo_nuve.pkl")
-```
-
----
-
-## Modelos clínicos utilizados
-
-| Modelo | Uso |
+| Padrão | Bônus |
 |---|---|
-| `pucpr/biobertpt-clin` | Embeddings (treinado em 2M prontuários BR) |
-| `pucpr/biobertpt-all` | Embeddings alternativos (clínico + biomédico) |
-| `neuralmind/bert-base-portuguese-cased` | BERTimbau — fallback PT-BR geral |
-| `pucpr/clinicalnerpt-disease` | NER: doenças e lesões (UMLS) |
-| `pucpr/clinicalnerpt-medical` | NER: 13 tipos de entidades clínicas |
+| Violência sexual | +4,0 |
+| Violência na gravidez | +3,5 |
+| Armas envolvidas | +3,0 |
+| Ameaças de morte | +3,0 |
+| Crianças presentes | +2,5 |
+| Violência crônica | +2,0 |
+| Controle psicológico | +2,0 |
+| Escalada da violência | +1,5 |
+| Múltiplas lesões | +1,5 |
+| Abuso econômico | +1,0 |
+
+Quando qualquer dos quatro padrões mais graves (armas, ameaças de morte, sexual, gravidez) é detectado, todos os limiares de severidade caem em 30%.
 
 ---
 
-## Testes
+## Reprodutibilidade
 
-```bash
-pytest                        # 67 testes (roda sem GPU)
-pytest -m "not slow"          # pula testes de BERT (requerem download de modelo)
+O cálculo de sensibilidade Wilson score implementado em `sensitivity.py` reproduz exatamente o resultado publicado no TCC:
+
+```python
+>>> from sensitivity import composite_sensitivity, format_pct
+>>> s = composite_sensitivity(detected_explicit=129, total_positive=152, contextual_high_risk=23)
+>>> format_pct(s['explicita'].sensitivity), format_pct(s['explicita'].ci_lower), format_pct(s['explicita'].ci_upper)
+('84.9%', '78.3%', '89.7%')   # TCC reporta 78,4%–89,8% (diferença ≤0,1pp por arredondamento)
+>>> format_pct(s['expandida'].sensitivity)
+'100.0%'
 ```
 
 ---
 
-## Exportação SINAN
+## Limitações reconhecidas (TCC)
 
-O módulo `frontend/core/export.py` gera arquivos no layout da **Ficha de Notificação Individual de Violência Interpessoal/Autoprovocada** (SINAN NET v2019), incluindo:
+- Validação apenas com **casos positivos confirmados** (viés de verificação parcial — impede cálculo de especificidade e VPN)
+- Validação por **avaliador único** (sem Kappa de Cohen)
+- Léxico sem lematização (variações morfológicas demandam entradas múltiplas)
+- Coorte de 2024 de um único centro (HC-FMUSP)
 
-- Código CID-10 sugerido por tipo
-- Tipo de violência conforme tabela SINAN (campo 41)
-- Hash anonimizado do paciente (sem PII)
-- Export CSV (UTF-8 BOM — compatível com Excel) e XLSX com duas abas
-
----
-
-## Privacidade e segurança
-
-- Dados de identificação (nome, RGHC, CPF) ficam exclusivamente na tabela `patients` do SQLite local
-- O Painel Público nunca acessa a tabela `patients`
-- O Painel Seguro exige autenticação por senha (hash SHA-256, configurável via variável de ambiente `NOTIFICAI_ADMIN_HASH`)
-- Todos os acessos a dados sensíveis são registrados em `access_log`
+Próximos passos descritos no TCC: inclusão de coorte balanceada, validação inter-avaliadores, externalização do léxico em JSON/YAML, integração de stemming RSLP.
 
 ---
 
 ## Referências
 
-- MORAES, E. M. et al. **BioBERTpt** — A Portuguese Neural Language Model for Clinical NER. *ACL Clinical NLP Workshop*, 2020.
-- SOUZA, F.; NOGUEIRA, R.; LOTUFO, R. **BERTimbau**: Pretrained BERT Models for Brazilian Portuguese. *BRACIS*, 2020.
-- Ministério da Saúde. **SINAN NET** — Ficha de Notificação/Investigação de Violência Doméstica, Sexual e/ou outras Violências, v2019.
+- BOSSUYT, P. M. et al. **STARD 2015**: An Updated List of Essential Items for Reporting Diagnostic Accuracy Studies. *BMJ*, 2015.
+- WILSON, E. B. Probable inference, the law of succession, and statistical inference. *JASA*, 1927.
+- Ministério da Saúde. **Portaria MS/GM nº 1.271/2014** — Notificação compulsória.
+- KUSHIDA, C. A. et al. Strategies for de-identification of clinical data. *Med Care*, 2012 (HIPAA Safe Harbor).
 
 ---
 
 ## Licença
 
-Uso acadêmico e institucional — NUVE/HC-FMUSP. Para outros usos, consulte o autor.
+Uso acadêmico. Para uso institucional ou comercial, consultar o autor (rafael.m.geraldo@alumni.usp.br).
